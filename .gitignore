@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+config.json
+timer.txt
+timer_log.txt
+*.exe
+dist/
+build/
