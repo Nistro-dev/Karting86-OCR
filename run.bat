@@ -1,5 +1,5 @@
 @echo off
-py "%~dp0ocr_timer.py"
+py "%~dp0main.py"
 if errorlevel 1 (
     echo.
     echo Erreur. Verifiez que Python et les dependances sont installes.

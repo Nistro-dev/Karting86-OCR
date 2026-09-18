@@ -1,8 +1,11 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 config.json
 timer.txt
 timer_log.txt
 *.exe
+*.spec
 dist/
-build/
+dist_installer/
+build/ApexTimingOCR/
