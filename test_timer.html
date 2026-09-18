@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Timer Test - Apex Timing OCR</title>
+<style>
+  :root {
+    --bg: #b8b8b8;
+    --fg: #111111;
+  }
+  body.dark {
+    --bg: #000000;
+    --fg: #00ff2a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #222;
+    font-family: Segoe UI, Arial, sans-serif;
+    color: #eee;
+  }
+  #display {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Consolas", "Courier New", monospace;
+    font-weight: bold;
+    font-size: 15vw;
+    line-height: 1;
+    padding: 0.2em 0.5em;
+    border-radius: 8px;
+    user-select: none;
+    letter-spacing: 0.05em;
+  }
+  #status {
+    margin-top: 12px;
+    font-size: 14px;
+    color: #9a9;
+    min-height: 18px;
+  }
+  #modeBar {
+    margin-top: 20px;
+    display: flex;
+    gap: 8px;
+    background: #1a1a1a;
+    padding: 4px;
+    border-radius: 20px;
+  }
+  #modeBar button {
+    border: none;
+    border-radius: 16px;
+    padding: 8px 18px;
+    background: transparent;
+    color: #aaa;
+  }
+  #modeBar button.active {
+    background: #4a7;
+    color: #111;
+  }
+  #panel {
+    margin-top: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+  }
+  button, input, select {
+    font-size: 15px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #333;
+    color: #eee;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:hover { background: #444; }
+  label { font-size: 14px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+  <div id="display">02:00</div>
+  <div id="status"></div>
+
+  <div id="modeBar">
+    <button id="modeAutoBtn" class="active">Auto (démarrage immédiat)</button>
+    <button id="modeManualBtn">Manuel (contrôle complet)</button>
+  </div>
+
+  <div id="panel">
+    <label>Durée <input id="startInput" type="text" value="02:00" size="6"></label>
+
+    <span id="manualControls" hidden>
+      <button id="btnStart">▶ Démarrer</button>
+      <button id="btnPause">⏸ Pause</button>
+      <button id="btnReset">⟲ Réinitialiser</button>
+    </span>
+
+    <span id="autoControls">
+      <button id="btnRestartAuto">⟲ Relancer maintenant</button>
+    </span>
+
+    <select id="modeSelect">
+      <option value="down">Compte à rebours</option>
+      <option value="up">Chronomètre (compte +)</option>
+    </select>
+    <select id="fmtSelect">
+      <option value="mmss">MM:SS</option>
+      <option value="hhmmss">HH:MM:SS</option>
+    </select>
+    <button id="btnTheme">Basculer thème (gris/noir)</button>
+
+    <label><input type="checkbox" id="lapsToggle"> Afficher les tours</label>
+    <label>Total tours <input id="lapsTotalInput" type="number" value="20" min="1" size="4"></label>
+    <button id="btnLapDone">+1 tour</button>
+  </div>
+
+<script>
+  const display = document.getElementById('display');
+  const statusEl = document.getElementById('status');
+  const startInput = document.getElementById('startInput');
+  const modeSelect = document.getElementById('modeSelect');
+  const fmtSelect = document.getElementById('fmtSelect');
+  const manualControls = document.getElementById('manualControls');
+  const autoControls = document.getElementById('autoControls');
+  const modeAutoBtn = document.getElementById('modeAutoBtn');
+  const modeManualBtn = document.getElementById('modeManualBtn');
+  const lapsToggle = document.getElementById('lapsToggle');
+  const lapsTotalInput = document.getElementById('lapsTotalInput');
+  const btnLapDone = document.getElementById('btnLapDone');
+
+  const STORAGE_KEY = 'apexOcrTestTimer';
+
+  function loadSettings() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveSettings(patch) {
+    try {
+      const cur = loadSettings();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...cur, ...patch }));
+    } catch (e) { /* ignore */ }
+  }
+
+  const settings = loadSettings();
+  let appMode = settings.appMode || 'auto'; // 'auto' | 'manual'
+  startInput.value = settings.duration || '02:00';
+  modeSelect.value = settings.countMode || 'down';
+  fmtSelect.value = settings.fmt || 'mmss';
+  lapsToggle.checked = settings.showLaps || false;
+  lapsTotalInput.value = settings.lapsTotal || 20;
+  if (settings.theme === 'dark') document.body.classList.add('dark');
+
+  let lapsDone = 0;
+
+  function parseToSeconds(str) {
+    const parts = str.split(':').map(n => parseInt(n, 10) || 0);
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return 0;
+  }
+
+  function formatSeconds(totalSeconds) {
+    totalSeconds = Math.max(0, totalSeconds);
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = Math.floor(totalSeconds % 60);
+    const pad = n => String(n).padStart(2, '0');
+    if (fmtSelect.value === 'hhmmss') {
+      return `${pad(h)}:${pad(m)}:${pad(s)}`;
+    }
+    return `${pad(m)}:${pad(s)}`;
+  }
+
+  let baseSeconds = parseToSeconds(startInput.value);
+  let elapsed = 0;
+  let running = false;
+  let lastTick = null;
+  let rafId = null;
+  let launchedAt = null;
+
+  function currentSeconds() {
+    if (modeSelect.value === 'down') {
+      return baseSeconds - elapsed;
+    }
+    return elapsed;
+  }
+
+  function render() {
+    const time = formatSeconds(currentSeconds());
+    if (lapsToggle.checked) {
+      display.textContent = `${lapsDone}/${lapsTotalInput.value} ${time}`;
+    } else {
+      display.textContent = time;
+    }
+  }
+
+  function tick(ts) {
+    if (!running) return;
+    if (lastTick !== null) {
+      elapsed += (ts - lastTick) / 1000;
+    }
+    lastTick = ts;
+    render();
+    if (modeSelect.value === 'down' && currentSeconds() <= 0) {
+      elapsed = baseSeconds;
+      render();
+      running = false;
+      return;
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function startTimer() {
+    if (running) return;
+    running = true;
+    lastTick = null;
+    launchedAt = new Date();
+    updateStatus();
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function pauseTimer() {
+    running = false;
+    lastTick = null;
+    if (rafId) cancelAnimationFrame(rafId);
+  }
+
+  function resetTimer() {
+    pauseTimer();
+    baseSeconds = parseToSeconds(startInput.value);
+    elapsed = 0;
+    lapsDone = 0;
+    render();
+  }
+
+  function updateStatus() {
+    if (appMode === 'auto' && launchedAt) {
+      const t = launchedAt.toLocaleTimeString();
+      statusEl.textContent = `● Lancé automatiquement à ${t} — durée réglée sur ${startInput.value}`;
+    } else {
+      statusEl.textContent = '';
+    }
+  }
+
+  function applyModeUI() {
+    if (appMode === 'auto') {
+      modeAutoBtn.classList.add('active');
+      modeManualBtn.classList.remove('active');
+      manualControls.hidden = true;
+      autoControls.hidden = false;
+    } else {
+      modeManualBtn.classList.add('active');
+      modeAutoBtn.classList.remove('active');
+      manualControls.hidden = false;
+      autoControls.hidden = true;
+      statusEl.textContent = '';
+    }
+  }
+
+  function launchAutoMode() {
+    resetTimer();
+    startTimer();
+  }
+
+  // --- Mode switch ---
+  modeAutoBtn.addEventListener('click', () => {
+    appMode = 'auto';
+    saveSettings({ appMode });
+    applyModeUI();
+    launchAutoMode();
+  });
+
+  modeManualBtn.addEventListener('click', () => {
+    appMode = 'manual';
+    saveSettings({ appMode });
+    pauseTimer();
+    applyModeUI();
+    resetTimer();
+  });
+
+  document.getElementById('btnRestartAuto').addEventListener('click', launchAutoMode);
+
+  // --- Manual controls ---
+  document.getElementById('btnStart').addEventListener('click', startTimer);
+  document.getElementById('btnPause').addEventListener('click', pauseTimer);
+  document.getElementById('btnReset').addEventListener('click', resetTimer);
+
+  document.getElementById('btnTheme').addEventListener('click', () => {
+    document.body.classList.toggle('dark');
+    saveSettings({ theme: document.body.classList.contains('dark') ? 'dark' : 'light' });
+  });
+
+  startInput.addEventListener('change', () => {
+    saveSettings({ duration: startInput.value });
+    resetTimer();
+    if (appMode === 'auto') startTimer();
+  });
+
+  modeSelect.addEventListener('change', () => {
+    saveSettings({ countMode: modeSelect.value });
+    resetTimer();
+    if (appMode === 'auto') startTimer();
+  });
+
+  fmtSelect.addEventListener('change', () => {
+    saveSettings({ fmt: fmtSelect.value });
+    render();
+  });
+
+  lapsToggle.addEventListener('change', () => {
+    saveSettings({ showLaps: lapsToggle.checked });
+    render();
+  });
+
+  lapsTotalInput.addEventListener('change', () => {
+    saveSettings({ lapsTotal: lapsTotalInput.value });
+    render();
+  });
+
+  btnLapDone.addEventListener('click', () => {
+    lapsDone = Math.min(Number(lapsTotalInput.value) || 0, lapsDone + 1);
+    render();
+  });
+
+  // --- Init ---
+  applyModeUI();
+  resetTimer();
+  if (appMode === 'auto') {
+    startTimer();
+  }
+</script>
+</body>
+</html>

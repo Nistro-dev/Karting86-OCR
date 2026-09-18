@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Mini Timer Test - Apex Timing OCR</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    position: relative;
+    background: #222;
+    font-family: Segoe UI, Arial, sans-serif;
+    color: #eee;
+  }
+
+  /* Zone à capturer par l'OCR : position et taille TOUJOURS fixes (utilisé
+     aussi par le harnais de tests E2E pour calculer la zone sans ambiguïté),
+     seul le texte à l'intérieur change de taille pour s'y adapter. */
+  #box {
+    position: absolute;
+    left: 20px;
+    top: 20px;
+    width: 420px;
+    height: 130px;
+    background: #b8b8b8;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  #display {
+    color: #111;
+    font-family: "Consolas", "Courier New", monospace;
+    font-weight: bold;
+    white-space: nowrap;
+    user-select: none;
+    line-height: 1;
+  }
+
+  #status { position: absolute; left: 20px; top: 160px; font-size: 13px; color: #9a9; }
+
+  #panel {
+    position: absolute;
+    left: 20px;
+    top: 188px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    max-width: 640px;
+  }
+  button, input, select {
+    font-size: 14px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #333;
+    color: #eee;
+  }
+  button { cursor: pointer; }
+  button:hover { background: #444; }
+  label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+</style>
+</head>
+<body>
+
+  <div id="box"><div id="display">10:00</div></div>
+  <div id="status"></div>
+
+  <div id="panel">
+    <select id="fmtSelect">
+      <option value="mmss">mm:ss</option>
+      <option value="hhmmss">hh:mm:ss</option>
+      <option value="laps_mmss">tours/tours + mm:ss</option>
+      <option value="laps_hhmmss">tours/tours + hh:mm:ss</option>
+    </select>
+    <label>Durée <input id="durationInput" type="text" value="10:00" size="8"></label>
+    <label id="lapsTotalWrap" hidden>Total tours <input id="lapsTotalInput" type="number" value="20" min="1" size="4"></label>
+    <button id="btnStart">▶ Lancer</button>
+    <button id="btnLap">+1 tour</button>
+    <button id="btnStop">■ Arrêter (retour au temps de base)</button>
+  </div>
+
+<script>
+  const box = document.getElementById('box');
+  const display = document.getElementById('display');
+  const statusEl = document.getElementById('status');
+  const fmtSelect = document.getElementById('fmtSelect');
+  const durationInput = document.getElementById('durationInput');
+  const lapsTotalWrap = document.getElementById('lapsTotalWrap');
+  const lapsTotalInput = document.getElementById('lapsTotalInput');
+
+  let baseSeconds = 0;
+  let withHours = false;
+  let withLaps = false;
+  let lapsDone = 0;
+  let elapsed = 0;
+  let running = false;
+  let lastTick = null;
+  let rafId = null;
+
+  function parseToSeconds(str) {
+    const parts = str.split(':').map(n => parseInt(n, 10) || 0);
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return 0;
+  }
+
+  function formatSeconds(totalSeconds) {
+    totalSeconds = Math.max(0, Math.round(totalSeconds));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = Math.floor(totalSeconds % 60);
+    const pad = n => String(n).padStart(2, '0');
+    return withHours ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  }
+
+  function currentSeconds() {
+    return Math.max(0, baseSeconds - elapsed);
+  }
+
+  function currentText() {
+    const time = formatSeconds(currentSeconds());
+    return withLaps ? `${lapsDone}/${lapsTotalInput.value} ${time}` : time;
+  }
+
+  // La boîte a une taille fixe : on réduit la police jusqu'à ce que le texte y tienne.
+  function fitText() {
+    const maxSize = box.clientHeight * 0.6;
+    const padding = 16;
+    let size = maxSize;
+    display.style.fontSize = size + 'px';
+    while (
+      size > 10 &&
+      (display.scrollWidth > box.clientWidth - padding || display.scrollHeight > box.clientHeight - padding)
+    ) {
+      size -= 2;
+      display.style.fontSize = size + 'px';
+    }
+  }
+
+  function render() {
+    display.textContent = currentText();
+    fitText();
+  }
+
+  function applyFormat() {
+    withHours = fmtSelect.value.includes('hhmmss');
+    withLaps = fmtSelect.value.startsWith('laps');
+    lapsTotalWrap.hidden = !withLaps;
+    baseSeconds = parseToSeconds(durationInput.value);
+    render();
+  }
+
+  function onFormatChangedByUser() {
+    durationInput.value = fmtSelect.value.includes('hhmmss') ? '01:23:45' : '10:00';
+    applyFormat();
+  }
+
+  function tick(ts) {
+    if (!running) return;
+    if (lastTick !== null) elapsed += (ts - lastTick) / 1000;
+    lastTick = ts;
+    if (currentSeconds() <= 0) {
+      render();
+      running = false;
+      statusEl.textContent = 'Terminé (temps écoulé).';
+      return;
+    }
+    render();
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function start() {
+    if (running) return;
+    baseSeconds = parseToSeconds(durationInput.value);
+    elapsed = 0;
+    lapsDone = 0;
+    running = true;
+    lastTick = null;
+    statusEl.textContent = 'En cours...';
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function stop() {
+    // Simule le bouton "Stop" d'Apex Timing : la course est annulée et
+    // l'affichage revient directement à sa valeur de base (pas de pause).
+    running = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    elapsed = 0;
+    lapsDone = 0;
+    render();
+    statusEl.textContent = 'Arrêté — revenu au temps de base.';
+  }
+
+  function incLap() {
+    const total = Number(lapsTotalInput.value) || 0;
+    lapsDone = Math.min(total, lapsDone + 1);
+    render();
+  }
+
+  fmtSelect.addEventListener('change', onFormatChangedByUser);
+  durationInput.addEventListener('change', () => { baseSeconds = parseToSeconds(durationInput.value); elapsed = 0; render(); });
+  lapsTotalInput.addEventListener('change', render);
+  document.getElementById('btnStart').addEventListener('click', start);
+  document.getElementById('btnStop').addEventListener('click', stop);
+  document.getElementById('btnLap').addEventListener('click', incLap);
+
+  // Paramètres d'URL pour piloter la page automatiquement (harnais de tests E2E) :
+  // ?fmt=laps_hhmmss&duration=00:00:10&lapsTotal=3&autostart=300&autolap=1500&autostop=6000
+  const params = new URLSearchParams(location.search);
+  if (params.has('fmt')) fmtSelect.value = params.get('fmt');
+  if (params.has('duration')) durationInput.value = params.get('duration');
+  if (params.has('lapsTotal')) lapsTotalInput.value = params.get('lapsTotal');
+  applyFormat();
+
+  // Titre unique par run (harnais E2E) : évite toute confusion avec une
+  // autre fenêtre/onglet qui aurait le même titre par ailleurs.
+  if (params.has('runid')) document.title = document.title + ' #' + params.get('runid');
+
+  if (params.has('autostart')) setTimeout(start, Number(params.get('autostart')));
+  if (params.has('autostop')) setTimeout(stop, Number(params.get('autostop')));
+  if (params.has('autolap')) {
+    const interval = Number(params.get('autolap'));
+    const lapTimer = setInterval(() => {
+      if (lapsDone >= (Number(lapsTotalInput.value) || 0)) { clearInterval(lapTimer); return; }
+      incLap();
+    }, interval);
+  }
+</script>
+</body>
+</html>
