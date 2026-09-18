@@ -55,6 +55,10 @@ class MainWindow(ctk.CTk):
 
         self._build_layout()
         self.set_taskbar_icon(HealthStatus.IDLE)
+        # CustomTkinter retouche la fenêtre (DPI, barre de titre sombre) juste
+        # après sa création sur Windows, ce qui peut écraser l'icône posée
+        # trop tôt -> on la repose après coup pour être sûr qu'elle tienne.
+        self.after(300, lambda: self.set_taskbar_icon(HealthStatus.IDLE))
 
     def set_taskbar_icon(self, status: HealthStatus) -> None:
         """Icône de la fenêtre/barre des tâches, teintée selon le statut
@@ -62,7 +66,7 @@ class MainWindow(ctk.CTk):
         try:
             img = branding.build_status_icon(64, _ICON_TINTS[status])
             self._icon_photo = ImageTk.PhotoImage(img)
-            self.iconphoto(True, self._icon_photo)
+            self.wm_iconphoto(True, self._icon_photo)
         except Exception:
             pass
 
