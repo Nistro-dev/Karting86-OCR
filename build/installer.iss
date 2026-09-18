@@ -1,13 +1,15 @@
 #define MyAppName "Apex Timing OCR"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "2.0.0"
 #define MyAppExeName "ApexTimingOCR.exe"
-#define MyAppPublisher "Karting86"
+#define MyAppPublisher "CodeForgeStudio"
+#define MyAppPublisherURL "https://codeforgestudio.fr"
 
 [Setup]
 AppId={{123CA05A-BE0C-4EF6-8DDD-814ED944A3D3}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppPublisherURL}
 DefaultDirName={userpf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -15,6 +17,8 @@ PrivilegesRequired=lowest
 OutputDir=..\dist_installer
 OutputBaseFilename=ApexTimingOCR_Setup
 SetupIconFile=..\assets\icon.ico
+WizardImageFile=installer_assets\wizard_image.bmp
+WizardSmallImageFile=installer_assets\wizard_small.bmp
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -58,5 +62,21 @@ begin
     Exec('winget',
       'install UB-Mannheim.TesseractOCR -e --silent --accept-source-agreements --accept-package-agreements',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataDir: String;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    DataDir := ExpandConstant('{localappdata}\ApexTimingOCR');
+    if DirExists(DataDir) then
+    begin
+      if MsgBox('Supprimer aussi la configuration et les journaux enregistrés (' + DataDir + ') ?',
+        mbConfirmation, MB_YESNO) = IDYES then
+        DelTree(DataDir, True, True, True);
+    end;
   end;
 end;

@@ -39,13 +39,13 @@ class ExternalDisplay(tk.Toplevel):
 
         self._time_var = tk.StringVar(value="--:--")
         time_lbl = tk.Label(
-            center, textvariable=self._time_var, font=("Consolas", 220, "bold"), fg="#FFFFFF", bg="black"
+            center, textvariable=self._time_var, font=("", 220, "bold"), fg="#FFFFFF", bg="black"
         )
         time_lbl.pack()
 
         self._laps_var = tk.StringVar(value="")
         laps_lbl = tk.Label(
-            center, textvariable=self._laps_var, font=("Consolas", 90, "bold"), fg=branding.PRIMARY_RED, bg="black"
+            center, textvariable=self._laps_var, font=("", 90, "bold"), fg=branding.PRIMARY_RED, bg="black"
         )
         laps_lbl.pack(pady=(10, 0))
 

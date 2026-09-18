@@ -1,12 +1,14 @@
-"""Fenêtre principale : configuration, aperçu, statut, journal."""
+"""Fenêtre principale (prod) : logo, statut, gros timer. Minimaliste par
+design — la configuration/calibration/journal vivent dans la fenêtre "dev"
+(``DevWindow``), ouverte via Ctrl+Maj+D."""
 from __future__ import annotations
 
 import tkinter as tk
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable
 
 import customtkinter as ctk
-from PIL import Image, ImageTk
+from PIL import ImageTk
 
 from apex_ocr import __version__
 from apex_ocr.config import AppConfig
@@ -20,18 +22,18 @@ _HEALTH_LABELS = {
     HealthStatus.ERROR: ("Problème", branding.PRIMARY_RED),
 }
 
+_ICON_TINTS = {
+    HealthStatus.IDLE: (140, 140, 140),
+    HealthStatus.ACTIVE: (0, 201, 74),
+    HealthStatus.ERROR: (237, 27, 36),
+}
+
+DEV_WINDOW_SHORTCUT = "<Control-Shift-KeyPress-D>"
+
 
 @dataclass
 class MainWindowCallbacks:
-    on_refresh_windows: Callable[[], list[str]]
-    on_browse_tesseract: Callable[[], Optional[str]]
-    on_select_zone: Callable[[], None]
-    on_test_ocr: Callable[[], None]
-    on_start: Callable[[], None]
-    on_stop: Callable[[], None]
-    on_open_external: Callable[[], None]
-    on_config_changed: Callable[[], None]
-    on_auto_calibrate: Callable[[], None]
+    on_toggle_dev: Callable[[], None]
     on_close: Callable[[], None]
 
 
@@ -46,246 +48,69 @@ class MainWindow(ctk.CTk):
 
         self._cb = callbacks
         self.title(f"Apex Timing OCR — v{__version__}")
-        self.geometry("720x700")
-        self.minsize(620, 580)
+        self.geometry("460x420")
+        self.minsize(380, 360)
         self.protocol("WM_DELETE_WINDOW", self._cb.on_close)
+        self.bind(DEV_WINDOW_SHORTCUT, lambda e: self._cb.on_toggle_dev())
 
-        self._preview_photo: Optional[ImageTk.PhotoImage] = None
+        self._build_layout()
+        self.set_taskbar_icon(HealthStatus.IDLE)
 
-        self._build_layout(config)
-        self._apply_window_icon()
-
-    def _apply_window_icon(self) -> None:
-        from apex_ocr.ui.tray import build_default_icon_image
-
+    def set_taskbar_icon(self, status: HealthStatus) -> None:
+        """Icône de la fenêtre/barre des tâches, teintée selon le statut
+        (même logique visuelle que l'icône systray)."""
         try:
-            self._icon_photo = ImageTk.PhotoImage(build_default_icon_image())
+            img = branding.build_status_icon(64, _ICON_TINTS[status])
+            self._icon_photo = ImageTk.PhotoImage(img)
             self.iconphoto(True, self._icon_photo)
         except Exception:
             pass
 
     # ---- construction ----------------------------------------------------
 
-    def _build_layout(self, config: AppConfig) -> None:
-        pad = {"padx": 12, "pady": 6}
-
+    def _build_layout(self) -> None:
         self._build_header()
 
-        cfg_frame = ctk.CTkFrame(self)
-        cfg_frame.pack(fill="x", padx=14, pady=(14, 8))
-
-        self.tess_var = tk.StringVar(value=config.tesseract_path)
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Tesseract :", width=100, anchor="w").pack(side="left")
-        ctk.CTkEntry(row, textvariable=self.tess_var, width=380).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(row, text="...", width=32, command=self._on_browse_tess).pack(side="left")
-
-        self.window_var = tk.StringVar(value=config.window_title)
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Fenêtre :", width=100, anchor="w").pack(side="left")
-        self.window_combo = ctk.CTkComboBox(row, variable=self.window_var, values=[], width=380)
-        self.window_combo.pack(side="left", padx=(0, 6))
-        ctk.CTkButton(row, text="↻", width=32, command=self._on_refresh_windows).pack(side="left")
-
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Zone :", width=100, anchor="w").pack(side="left")
-        self.zone_label = ctk.CTkLabel(row, text=self.format_zone(config.zone))
-        self.zone_label.pack(side="left", padx=(0, 10))
-        ctk.CTkButton(row, text="Définir la zone", command=self._cb.on_select_zone).pack(side="left")
-
-        digit_vcmd = (self.register(self._validate_digits), "%P")
-
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Seuil :", width=100, anchor="w").pack(side="left")
-        self.threshold_var = tk.IntVar(value=config.threshold)
-        ctk.CTkSlider(row, from_=0, to=255, variable=self.threshold_var, width=190).pack(side="left")
-        self.threshold_lbl = ctk.CTkLabel(row, text=str(config.threshold), width=36)
-        self.threshold_lbl.pack(side="left", padx=6)
-        self.threshold_var.trace_add(
-            "write", lambda *_: self.threshold_lbl.configure(text=str(self.threshold_var.get()))
-        )
-        ctk.CTkButton(row, text="Auto", width=50, command=self._cb.on_auto_calibrate).pack(side="left", padx=(6, 0))
-
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Intervalle :", width=100, anchor="w").pack(side="left")
-        self.interval_var = tk.StringVar(value=str(config.ocr_interval_ms))
-        ctk.CTkEntry(
-            row, textvariable=self.interval_var, width=60, validate="key", validatecommand=digit_vcmd
-        ).pack(side="left")
-        ctk.CTkLabel(row, text="ms").pack(side="left", padx=(4, 16))
-        ctk.CTkLabel(row, text="Tolérance :", width=70, anchor="w").pack(side="left")
-        self.tolerance_var = tk.StringVar(value=str(config.resync_tolerance_seconds))
-        ctk.CTkEntry(
-            row, textvariable=self.tolerance_var, width=40, validate="key", validatecommand=digit_vcmd
-        ).pack(side="left")
-        ctk.CTkLabel(row, text="s").pack(side="left", padx=4)
-
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Signal perdu :", width=100, anchor="w").pack(side="left")
-        self.ocr_lost_timeout_var = tk.StringVar(value=str(int(config.ocr_lost_timeout_seconds)))
-        ctk.CTkEntry(
-            row, textvariable=self.ocr_lost_timeout_var, width=50, validate="key", validatecommand=digit_vcmd
-        ).pack(side="left")
-        ctk.CTkLabel(row, text="s sans lecture valide avant d'arrêter la session").pack(side="left", padx=4)
-
-        prev_frame = ctk.CTkFrame(self)
-        prev_frame.pack(fill="x", padx=14, pady=8)
-        ctk.CTkLabel(prev_frame, text="Aperçu zone capturée", anchor="w").pack(fill="x", padx=8, pady=(6, 0))
-        self.preview_canvas = tk.Canvas(prev_frame, height=60, bg="#1e1e1e", highlightthickness=0)
-        self.preview_canvas.pack(fill="x", padx=8, pady=8)
-
-        timer_frame = ctk.CTkFrame(self)
-        timer_frame.pack(fill="x", padx=14, pady=8)
-
-        status_row = ctk.CTkFrame(timer_frame, fg_color="transparent")
-        status_row.pack(fill="x", padx=10, pady=(8, 0))
+        status_row = ctk.CTkFrame(self, fg_color="transparent")
+        status_row.pack(fill="x", padx=16, pady=(4, 0))
         self.status_dot = tk.Canvas(status_row, width=14, height=14, highlightthickness=0)
         self.status_dot.pack(side="left")
         self._status_dot_id = self.status_dot.create_oval(2, 2, 12, 12, fill="#8a8a8a", outline="")
         self.status_lbl = ctk.CTkLabel(status_row, text="En attente")
         self.status_lbl.pack(side="left", padx=6)
 
+        timer_frame = ctk.CTkFrame(self)
+        timer_frame.pack(fill="both", expand=True, padx=16, pady=12)
         timer_bg = tk.Frame(timer_frame, bg="black")
-        timer_bg.pack(fill="x", padx=10, pady=10)
+        timer_bg.pack(fill="both", expand=True, padx=10, pady=10)
         self.time_lbl = tk.Label(
-            timer_bg, text="--:--", font=("Consolas", 48, "bold"), fg="#FFFFFF", bg="black"
+            timer_bg, text="--:--", font=("", 52, "bold"), fg="#FFFFFF", bg="black"
         )
-        self.time_lbl.pack(pady=(10, 0))
+        self.time_lbl.pack(expand=True)
         self.laps_lbl = tk.Label(
-            timer_bg, text="", font=("Consolas", 22, "bold"), fg=branding.PRIMARY_RED, bg="black"
+            timer_bg, text="", font=("", 24, "bold"), fg=branding.PRIMARY_RED, bg="black"
         )
-        self.laps_lbl.pack(pady=(0, 10))
-
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=14, pady=4)
-        self.start_btn = ctk.CTkButton(btn_row, text="▶  Démarrer", command=self._cb.on_start)
-        self.start_btn.pack(side="left", padx=4)
-        self.stop_btn = ctk.CTkButton(btn_row, text="■  Arrêter", command=self._cb.on_stop, state="disabled")
-        self.stop_btn.pack(side="left", padx=4)
-        self.external_btn = ctk.CTkButton(btn_row, text="Affichage externe", command=self._cb.on_open_external)
-        self.external_btn.pack(side="left", padx=4)
-        ctk.CTkButton(btn_row, text="Test OCR", command=self._cb.on_test_ocr).pack(side="right", padx=4)
-
-        log_frame = ctk.CTkFrame(self)
-        log_frame.pack(fill="both", expand=True, padx=14, pady=(8, 14))
-        ctk.CTkLabel(log_frame, text="Journal", anchor="w").pack(fill="x", padx=8, pady=(6, 0))
-        self.log_text = ctk.CTkTextbox(log_frame, height=140, state="disabled", font=("Consolas", 11))
-        self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
-
-        self.refresh_windows(config.window_title)
+        self.laps_lbl.pack(pady=(0, 16))
 
     def _build_header(self) -> None:
         logo = branding.load_logo()
         if logo is None:
             return
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=14, pady=(14, 0))
-        display_w = 200
+        header.pack(fill="x", padx=16, pady=(16, 0))
+        display_w = 160
         display_h = int(logo.height * (display_w / logo.width))
         self._header_logo = ctk.CTkImage(light_image=logo, dark_image=logo, size=(display_w, display_h))
         ctk.CTkLabel(header, image=self._header_logo, text="").pack(side="left")
 
-    def _on_browse_tess(self) -> None:
-        path = self._cb.on_browse_tesseract()
-        if path:
-            self.tess_var.set(path)
-            self._cb.on_config_changed()
-
-    def _on_refresh_windows(self) -> None:
-        self.refresh_windows(self.window_var.get())
-
-    def refresh_windows(self, keep_selected: str = "") -> None:
-        titles = self._cb.on_refresh_windows()
-        self.window_combo.configure(values=titles)
-        if keep_selected:
-            self.window_var.set(keep_selected)
-
-    @staticmethod
-    def _validate_digits(proposed: str) -> bool:
-        return proposed == "" or proposed.isdigit()
-
-    @staticmethod
-    def format_zone(zone) -> str:
-        if zone:
-            x, y, w, h = zone
-            return f"x={x}  y={y}  {w}×{h} px"
-        return "Non définie"
-
-    # ---- lecture des valeurs courantes -----------------------------------
-
-    @staticmethod
-    def _parse_int(var: tk.StringVar, fallback: int, minimum: int = 0) -> int:
-        """Lit un champ numérique en tolérant un champ vide ou invalide (la
-        saisie clavier est déjà filtrée aux chiffres, mais un champ peut
-        transiter par un état vide pendant l'édition) -> repli sur la
-        dernière valeur de config connue plutôt qu'une exception."""
-        text = var.get().strip()
-        if not text:
-            return fallback
-        try:
-            value = int(text)
-        except ValueError:
-            return fallback
-        return max(minimum, value)
-
-    def current_config_values(self, fallback: AppConfig) -> dict:
-        return {
-            "window_title": self.window_var.get().strip(),
-            "tesseract_path": self.tess_var.get().strip(),
-            "threshold": int(self.threshold_var.get()),
-            "ocr_interval_ms": self._parse_int(self.interval_var, fallback.ocr_interval_ms, minimum=50),
-            "resync_tolerance_seconds": self._parse_int(
-                self.tolerance_var, fallback.resync_tolerance_seconds, minimum=1
-            ),
-            "ocr_lost_timeout_seconds": float(
-                self._parse_int(
-                    self.ocr_lost_timeout_var, int(fallback.ocr_lost_timeout_seconds), minimum=1
-                )
-            ),
-        }
-
     # ---- mise à jour depuis l'orchestrateur ------------------------------
-
-    def set_zone(self, zone) -> None:
-        self.zone_label.configure(text=self.format_zone(zone))
-
-    def set_threshold(self, value: int) -> None:
-        self.threshold_var.set(value)
-
-    def set_running(self, running: bool) -> None:
-        self.start_btn.configure(state="disabled" if running else "normal")
-        self.stop_btn.configure(state="normal" if running else "disabled")
 
     def set_display(self, value: DisplayValue) -> None:
         self.time_lbl.configure(text=value.time_text)
         self.laps_lbl.configure(text=f"{value.laps_done} / {value.laps_total}" if value.laps_total is not None else "")
 
-    def set_external_open(self, is_open: bool) -> None:
-        self.external_btn.configure(text="Fermer l'affichage externe" if is_open else "Affichage externe")
-
     def set_health(self, status: HealthStatus) -> None:
         label, color = _HEALTH_LABELS[status]
         self.status_dot.itemconfig(self._status_dot_id, fill=color)
         self.status_lbl.configure(text=label)
-
-    def set_preview_image(self, pil_img: Image.Image) -> None:
-        cw = self.preview_canvas.winfo_width() or 640
-        iw, ih = pil_img.size
-        scale = min(cw / iw, 60 / ih, 4.0)
-        dw, dh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        disp = pil_img.resize((dw, dh), Image.LANCZOS)
-        self._preview_photo = ImageTk.PhotoImage(disp)
-        self.preview_canvas.delete("all")
-        self.preview_canvas.create_image(cw // 2, 30, anchor="center", image=self._preview_photo)
-
-    def log(self, message: str) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", message + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+        self.set_taskbar_icon(status)

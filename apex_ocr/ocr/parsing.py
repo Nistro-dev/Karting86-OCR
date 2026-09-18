@@ -114,28 +114,40 @@ class LenientReading:
     laps_total: Optional[int]
 
 
+def _strip_time_token(text: str) -> tuple[str, Optional[re.Match]]:
+    """Retire le premier motif d'horaire trouvé (ancré sur ':', donc sans
+    ambiguïté) et renvoie le texte restant + le match. Doit toujours être
+    extrait AVANT les tours : sinon, quand l'OCR ne restitue pas l'espace
+    entre "tt/tt" et l'heure (ex: "0/2010:00" au lieu de "0/20 10:00"), la
+    regex gourmande des tours mange les premiers chiffres de l'heure
+    (-> "0/201" au lieu de "0/20")."""
+    match = _find_time_match(text)
+    if not match:
+        return text, None
+    remainder = (text[: match.start()] + text[match.end() :]).strip()
+    return remainder, match
+
+
 def parse_strict(raw_text: str) -> Optional[StrictReading]:
     text = clean_raw(raw_text)
     if not text:
         return None
 
-    laps_match = _LAPS_RE.search(text)
-    remainder = text
-    laps_done = laps_total = None
-    if laps_match:
-        laps_done, laps_total = int(laps_match.group(1)), int(laps_match.group(2))
-        remainder = (text[: laps_match.start()] + text[laps_match.end() :]).strip()
-
-    time_match = _find_time_match(remainder)
-    if not time_match:
+    remainder, time_match = _strip_time_token(text)
+    if time_match is None:
         return None
     raw_time = time_match.group(0)
     time_text = raw_time if ":" in raw_time else repair_colons(raw_time)
     if not is_valid_time(time_text):
         return None
 
-    leftover = (remainder[: time_match.start()] + remainder[time_match.end() :]).strip()
-    if leftover:
+    laps_done = laps_total = None
+    laps_match = _LAPS_RE.search(remainder)
+    if laps_match:
+        laps_done, laps_total = int(laps_match.group(1)), int(laps_match.group(2))
+        remainder = (remainder[: laps_match.start()] + remainder[laps_match.end() :]).strip()
+
+    if remainder:
         return None
 
     return StrictReading(time_text=time_text, laps_done=laps_done, laps_total=laps_total)
@@ -145,8 +157,11 @@ def parse_lenient(raw_text: str) -> LenientReading:
     """Tente toujours d'extraire les tours (même si absents jusqu'ici) : sinon
     on ne détecterait jamais leur apparition en cours de session."""
     text = clean_raw(raw_text)
+    time_text = extract_time(text)
+    remainder, _ = _strip_time_token(text)
+
     laps_done = laps_total = None
-    laps = extract_laps(text)
+    laps = extract_laps(remainder)
     if laps is not None:
         laps_done, laps_total = laps
-    return LenientReading(time_text=extract_time(text), laps_done=laps_done, laps_total=laps_total)
+    return LenientReading(time_text=time_text, laps_done=laps_done, laps_total=laps_total)
