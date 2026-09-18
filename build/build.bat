@@ -26,7 +26,7 @@ py build\make_icon.py
 py build\make_installer_branding.py
 
 echo [4/6] Compilation de l'executable (PyInstaller)...
-py -m PyInstaller --noconfirm --clean --onefile --windowed --name "ApexTimingOCR" --icon "assets\icon.ico" --collect-all customtkinter --add-data "apex_ocr\ui\theme_newkart.json;apex_ocr\ui" --add-data "assets\logo_newkart_poitiers.png;assets" main.py
+py -m PyInstaller --noconfirm --clean --onefile --windowed --name "ApexTimingOCR" --icon "assets\icon.ico" --collect-all customtkinter --add-data "apex_ocr\ui\theme_newkart.json;apex_ocr\ui" --add-data "assets\logo_favicon.png;assets" --add-data "assets\logo_square.png;assets" --add-data "assets\logo_round.png;assets" main.py
 
 where ISCC >nul 2>nul
 if errorlevel 1 (

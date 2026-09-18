@@ -93,7 +93,9 @@ apex_ocr/
     branding.py               logo + palette New Kart Poitiers
     theme_newkart.json        thème CustomTkinter (rouge/noir, dérivé du logo)
 assets/
-  logo_newkart_poitiers.png   logo source (utilisé pour l'icône, la fenêtre, l'affichage externe)
+  logo_favicon.png             marque seule, fond transparent (bandeau fenêtre, filigrane affichage externe)
+  logo_square.png               carré arrondi (icône exe / fenêtre / barre des tâches)
+  logo_round.png                 badge rond (icône systray)
 tests/                       tests unitaires (parsing, machine à états, santé, calibration)
 ```
 

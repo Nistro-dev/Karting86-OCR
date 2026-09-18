@@ -1,4 +1,12 @@
-"""Ressources de marque : logo New Kart Poitiers et palette associée."""
+"""Ressources de marque : logos New Kart Poitiers et palette associée.
+
+Trois variantes, chacune avec un usage dédié :
+- ``logo_favicon.png`` : marque seule, fond transparent -> placée sur les
+  fonds existants (bandeau fenêtre, filigrane affichage externe).
+- ``logo_square.png`` : carré arrondi (fond noir intégré) -> icône exe /
+  fenêtre / barre des tâches.
+- ``logo_round.png`` : badge rond (fond noir intégré) -> icône systray.
+"""
 from __future__ import annotations
 
 import os
@@ -9,7 +17,9 @@ from PIL import Image
 _UI_DIR = os.path.dirname(os.path.abspath(__file__))
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(_UI_DIR)), "assets")
 
-LOGO_PATH = os.path.join(_ASSETS_DIR, "logo_newkart_poitiers.png")
+FAVICON_PATH = os.path.join(_ASSETS_DIR, "logo_favicon.png")
+SQUARE_LOGO_PATH = os.path.join(_ASSETS_DIR, "logo_square.png")
+ROUND_LOGO_PATH = os.path.join(_ASSETS_DIR, "logo_round.png")
 THEME_PATH = os.path.join(_UI_DIR, "theme_newkart.json")
 
 PRIMARY_RED = "#ED1B24"
@@ -18,30 +28,36 @@ ACCENT_GREY = "#787878"
 BG_BLACK = "#111111"
 
 
-def load_logo() -> Optional[Image.Image]:
+def _load(path: str) -> Optional[Image.Image]:
     try:
-        return Image.open(LOGO_PATH).convert("RGBA")
+        return Image.open(path).convert("RGBA")
     except Exception:
         return None
 
 
-def build_status_icon(size: int, tint: tuple[int, int, int], alpha: float = 0.40) -> Image.Image:
-    """Logo carré teinté d'une couleur de statut (icône fenêtre/systray)."""
-    base = build_square_icon(size).convert("RGBA")
-    overlay = Image.new("RGBA", base.size, (*tint, int(255 * alpha)))
-    return Image.alpha_composite(base, overlay)
+def load_logo() -> Optional[Image.Image]:
+    """Marque seule, fond transparent (bandeaux/filigranes)."""
+    return _load(FAVICON_PATH)
 
 
 def build_square_icon(size: int = 256) -> Image.Image:
-    """Compose le logo (rectangulaire) sur un canevas carré, pour l'icône
-    exe / fenêtre / systray."""
-    canvas = Image.new("RGBA", (size, size), (17, 17, 17, 255))
-    logo = load_logo()
-    if logo is not None:
-        scale = min(size * 0.86 / logo.width, size * 0.86 / logo.height)
-        new_size = (max(1, int(logo.width * scale)), max(1, int(logo.height * scale)))
-        resized = logo.resize(new_size, Image.LANCZOS)
-        x = (size - new_size[0]) // 2
-        y = (size - new_size[1]) // 2
-        canvas.paste(resized, (x, y), resized)
-    return canvas
+    """Icône carrée (exe / fenêtre / barre des tâches)."""
+    img = _load(SQUARE_LOGO_PATH)
+    if img is None:
+        return Image.new("RGBA", (size, size), (17, 17, 17, 255))
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def build_round_icon(size: int = 256) -> Image.Image:
+    """Icône ronde (systray)."""
+    img = _load(ROUND_LOGO_PATH)
+    if img is None:
+        return build_square_icon(size)
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def build_status_icon(size: int, tint: tuple[int, int, int], alpha: float = 0.40, round_shape: bool = False) -> Image.Image:
+    """Icône (carrée ou ronde) teintée d'une couleur de statut."""
+    base = (build_round_icon(size) if round_shape else build_square_icon(size)).convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (*tint, int(255 * alpha)))
+    return Image.alpha_composite(base, overlay)
