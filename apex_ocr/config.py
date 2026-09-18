@@ -34,6 +34,7 @@ class AppConfig:
     resync_tolerance_seconds: int = 3
     ocr_lost_timeout_seconds: float = 10.0
     log_retention_days: int = 30
+    external_monitor_index: Optional[int] = None
 
     @classmethod
     def load(cls) -> "AppConfig":

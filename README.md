@@ -10,7 +10,7 @@ Apex Timing ne propose ni API ni port local pour récupérer ces données. Cette
 - Une seule zone à définir, contenant temps seul (`mm:ss`, `hh:mm:ss`) ou temps + tours (`tt/tt mm:ss`, `ttt/ttt hh:mm:ss`) — le format est **détecté automatiquement**
 - Détection de départ fiable : une lecture isolée n'arme rien ; il faut voir le temps **diminuer** pour confirmer un vrai départ
 - Une fois la course en cours : le temps affiché suit une horloge interne fluide (pas de saccades), resynchronisée discrètement si l'OCR dérive au-delà d'une tolérance réglable ; le compteur de tours, lui, est mis à jour immédiatement à chaque lecture
-- Arrêt automatique de la session quand le temps atteint zéro, que les tours atteignent le total, ou (filet de sécurité) si l'OCR ne lit plus rien pendant trop longtemps — puis réarmement automatique pour la prochaine course, sans action manuelle
+- Arrêt automatique de la session uniquement quand le **temps** s'arrête vraiment (atteint zéro, annulé/réinitialisé sur la source, ou (filet de sécurité) l'OCR ne lit plus rien pendant trop longtemps) — atteindre le total de tours (ex: 20/20) n'arrête pas la session, le temps peut continuer sur la source. Puis réarmement automatique pour la prochaine course, sans action manuelle
 - Affichage externe : bouton qui liste les écrans connectés, clic → ouverture direct en plein écran avec le temps et les tours en grand
 - Conçu pour tourner en production toute la journée sans supervision : récupère sa configuration au démarrage, retente en arrière-plan si la fenêtre source n'est pas encore ouverte, et remonte un statut de santé dans la zone de notification (gris = attente, vert = course suivie, rouge = problème). Pas de notification Windows (trop intrusif), l'historique reste dans le log
 - Calibration automatique du seuil (bouton **Auto**) : teste plusieurs captures dans le temps sur une plage de seuils et retient le plus robuste
@@ -34,14 +34,18 @@ Apex Timing ne propose ni API ni port local pour récupérer ces données. Cette
 
 ## Utilisation
 
+L'appli a deux fenêtres :
+- **Fenêtre principale** : minimaliste (logo, statut, gros timer) — c'est ce qui tourne au quotidien en prod
+- **Fenêtre dev** (`Ctrl+Maj+D` depuis la fenêtre principale) : configuration, calibration, test OCR, journal, affichage externe — masquée par défaut
+
+Calibration initiale (dans la fenêtre dev) :
 1. Sélectionner la fenêtre Apex Timing dans le menu déroulant
 2. Cliquer **Définir la zone** et dessiner un rectangle autour du timer (et du compteur de tours s'il est présent dans la même zone)
 3. Cliquer **Test OCR** pour vérifier la détection et le format reconnu
-4. Ajuster le **seuil** si la lecture est mauvaise (fond gris / chiffres noirs : ~120-150)
-5. L'OCR démarre automatiquement si une fenêtre et une zone sont déjà configurées (sinon cliquer **Démarrer**)
-6. Cliquer **Affichage externe**, survoler la liste pour repérer l'écran (cadre rouge), choisir : ouverture directe en plein écran. Pour fermer : re-cliquer **Affichage externe** dans la fenêtre principale (le plus fiable), ou le petit ✕ discret en haut à droite de l'écran externe
+4. Cliquer **Auto** à côté du seuil pour calibrer automatiquement (ou ajuster manuellement si besoin)
+5. Cliquer **Affichage externe**, survoler la liste pour repérer l'écran (cadre rouge), choisir : ouverture directe en plein écran. L'écran choisi est mémorisé et se rouvre automatiquement aux lancements suivants. Pour fermer : re-cliquer **Affichage externe** dans la fenêtre dev (le plus fiable), ou le petit ✕ discret en haut à droite de l'écran externe
 
-Fermer la fenêtre principale la réduit dans la zone de notification (l'OCR continue de tourner) ; utiliser **Quitter** dans le menu de l'icône pour arrêter complètement l'application.
+Une fois fenêtre + zone configurées, l'OCR démarre automatiquement à chaque lancement, la fenêtre principale se réduit direct dans la zone de notification, et l'affichage externe se rouvre sur l'écran mémorisé — aucune action manuelle requise en usage normal. Utiliser **Quitter** dans le menu de l'icône systray pour arrêter complètement l'application.
 
 ## Sortie
 
@@ -80,7 +84,8 @@ apex_ocr/
     engine.py                 appel Tesseract
     calibration.py            calibration auto du seuil (multi-échantillons, pure logique testée)
   ui/
-    main_window.py            fenêtre principale (CustomTkinter)
+    main_window.py            fenêtre principale minimaliste (logo, statut, timer)
+    dev_window.py              fenêtre dev (config/calibration/journal/test OCR/affichage externe), masquée par défaut, Ctrl+Maj+D pour l'ouvrir
     zone_selector.py          sélection de la zone à la souris
     screen_picker.py          liste des écrans connectés (+ repère visuel au survol)
     external_display.py       affichage plein écran (piste)

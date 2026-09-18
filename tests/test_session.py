@@ -81,7 +81,10 @@ def test_tick_stops_session_at_zero():
     assert t.last_completed.reason == StopReason.TIME_ZERO
 
 
-def test_laps_update_immediately_and_stop_on_completion():
+def test_laps_update_immediately_but_reaching_total_does_not_stop_session():
+    # Le temps peut continuer sur la source même après 20/20 (tour de
+    # décélération, etc.) -> seul le temps qui s'arrête vraiment doit
+    # arrêter le suivi, pas le fait d'atteindre le total de tours.
     t = SessionTracker()
     t.on_strict_reading(strict("10:00", laps_done=0, laps_total=2), now=0.0)
     t.on_strict_reading(strict("09:59", laps_done=0, laps_total=2), now=1.0)
@@ -92,10 +95,15 @@ def test_laps_update_immediately_and_stop_on_completion():
     assert SessionEvent.LAPS_UPDATED in events
     assert t.live_display(now=3.0).laps_done == 1
 
-    events = t.on_lenient_reading(lenient(time_text="05:00", laps_done=2, laps_total=2), now=4.0)
-    assert SessionEvent.STOPPED in events
-    assert t.last_completed.reason == StopReason.LAPS_COMPLETE
-    assert t.last_completed.laps_done == 2
+    events = t.on_lenient_reading(lenient(time_text="09:56", laps_done=2, laps_total=2), now=4.0)
+    assert SessionEvent.LAPS_UPDATED in events
+    assert SessionEvent.STOPPED not in events
+    assert t.state == SessionState.RUNNING
+    assert t.live_display(now=4.0).laps_done == 2
+
+    # le temps continue de tourner normalement après les 2/2 tours
+    live = t.live_display(now=6.0)
+    assert live.laps_done == 2 and live.time_text != "09:56"
 
 
 def test_time_not_updated_directly_only_resynced_beyond_tolerance():

@@ -65,6 +65,24 @@ def test_parse_strict_rejects_leftover_noise():
     assert parse_strict("5/20 07:32 99") is None
 
 
+def test_parse_strict_no_space_between_laps_and_time_mmss():
+    # l'OCR ne restitue pas toujours l'espace entre "tt/tt" et l'heure :
+    # "0/20 10:00" -> "0/2010:00". Le temps doit être extrait en premier
+    # (ancré sur ':') pour ne pas laisser la regex des tours manger "10".
+    r = parse_strict("0/2010:00")
+    assert r == StrictReading(time_text="10:00", laps_done=0, laps_total=20)
+
+
+def test_parse_strict_no_space_between_laps_and_time_hhmmss():
+    r = parse_strict("0/2001:23:45")
+    assert r == StrictReading(time_text="01:23:45", laps_done=0, laps_total=20)
+
+
+def test_parse_lenient_no_space_between_laps_and_time():
+    r = parse_lenient("0/2010:00")
+    assert r == LenientReading(time_text="10:00", laps_done=0, laps_total=20)
+
+
 def test_parse_lenient_full_reading():
     r = parse_lenient("5/20 07:32")
     assert r == LenientReading(time_text="07:32", laps_done=5, laps_total=20)

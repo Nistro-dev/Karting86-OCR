@@ -12,13 +12,15 @@ waiting -> armed -> running -> (stop) -> waiting
   Une remontée du temps au-delà de la tolérance, confirmée sur
   ``REQUIRED_CONFIRMATIONS`` lectures de suite, est traitée comme une
   annulation (cf. ``StopReason.CANCELLED``) plutôt qu'une resynchro.
-- L'arrêt est déclenché par : temps à zéro, tours au total, ou perte de
-  lecture OCR prolongée (filet de sécurité, basé sur une vraie durée sans
-  lecture valide plutôt qu'un nombre de sondages ratés : une lecture rejetée
-  ponctuellement ne doit pas couper une course qui se déroule normalement).
-  Après arrêt, l'état repart aussitôt en attente d'un nouveau départ
-  (réarmement automatique) ; la dernière valeur reste disponible via
-  ``last_completed`` pour l'affichage.
+- L'arrêt est déclenché uniquement par le TEMPS : zéro atteint, annulation
+  (retour au temps de base), ou perte de lecture OCR prolongée (filet de
+  sécurité, basé sur une vraie durée sans lecture valide plutôt qu'un
+  nombre de sondages ratés). Les tours atteignant leur total (ex: 20/20)
+  n'arrêtent PAS la session : ils continuent d'être suivis/affichés, seul
+  le temps qui s'arrête vraiment sur la source arrête le suivi. Après
+  arrêt, l'état repart aussitôt en attente d'un nouveau départ (réarmement
+  automatique) ; la dernière valeur reste disponible via ``last_completed``
+  pour l'affichage.
 """
 from __future__ import annotations
 
@@ -40,7 +42,6 @@ class SessionState(Enum):
 
 class StopReason(Enum):
     TIME_ZERO = auto()
-    LAPS_COMPLETE = auto()
     OCR_LOST = auto()
     CANCELLED = auto()
 
@@ -186,6 +187,10 @@ class SessionTracker:
             # Les tours ne redescendent jamais pendant une course : une
             # lecture plus basse que ce qu'on a déjà confirmé est forcément
             # du bruit OCR (ex: un 5 lu comme 1) -> on l'ignore.
+            # Atteindre le total de tours (ex: 20/20) n'arrête PAS la session :
+            # le temps peut continuer à tourner sur la source (tour de
+            # décélération, prolongation...) -> seul le temps qui s'arrête
+            # vraiment (TIME_ZERO/CANCELLED/OCR_LOST) arrête le suivi.
             if self._laps_done is None or reading.laps_done >= self._laps_done:
                 self._has_laps = True
                 if reading.laps_done != self._laps_done:
@@ -193,13 +198,6 @@ class SessionTracker:
                     events.append(SessionEvent.LAPS_UPDATED)
                 if reading.laps_total:
                     self._laps_total = reading.laps_total
-                if (
-                    self._laps_total is not None
-                    and self._laps_done is not None
-                    and self._laps_done >= self._laps_total
-                ):
-                    events.append(self._stop(StopReason.LAPS_COMPLETE, now))
-                    return events
 
         if reading.time_text is not None:
             self._last_good_time_wall = now

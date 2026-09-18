@@ -3,6 +3,10 @@
 Toute mutation d'état (session, santé, widgets) passe par le thread principal
 Tk via ``window.after(0, ...)`` — la boucle OCR tourne dans un thread séparé
 et ne fait que lire des images / appeler Tesseract.
+
+Deux fenêtres : ``window`` (minimaliste, toujours visible/réduite dans la
+zone de notification) et ``dev_window`` (configuration/calibration/journal/
+test OCR/affichage externe, masquée par défaut, ouverte via Ctrl+Maj+D).
 """
 from __future__ import annotations
 
@@ -24,9 +28,10 @@ from apex_ocr.ocr.parsing import parse_lenient, parse_strict
 from apex_ocr.ocr.preprocess import preprocess
 from apex_ocr.paths import OUTPUT_PATH
 from apex_ocr.session import DisplayValue, SessionEvent, SessionState, SessionTracker, StopReason, current_display
+from apex_ocr.ui.dev_window import DevWindow, DevWindowCallbacks
 from apex_ocr.ui.external_display import ExternalDisplay
 from apex_ocr.ui.main_window import MainWindow, MainWindowCallbacks
-from apex_ocr.ui.screen_picker import MonitorInfo, ScreenPicker
+from apex_ocr.ui.screen_picker import MonitorInfo, ScreenPicker, list_monitors
 from apex_ocr.ui.tray import TrayIcon
 from apex_ocr.ui.zone_selector import ZoneSelector
 
@@ -36,7 +41,6 @@ CALIBRATION_SAMPLE_INTERVAL_S = 0.25
 
 _REASON_LABELS = {
     StopReason.TIME_ZERO: "temps écoulé",
-    StopReason.LAPS_COMPLETE: "tours terminés",
     StopReason.OCR_LOST: "signal perdu",
     StopReason.CANCELLED: "course annulée",
 }
@@ -55,11 +59,18 @@ class App:
         self.health = HealthMonitor()
         self._last_health_status: Optional[HealthStatus] = None
         self._last_output_text = ""
+        self._error_count = 0
+        self._last_error_wall: Optional[float] = None
 
         self.running = False
         self.external_display: Optional[ExternalDisplay] = None
 
-        callbacks = MainWindowCallbacks(
+        self.window = MainWindow(
+            self.config,
+            MainWindowCallbacks(on_toggle_dev=self._toggle_dev_window, on_close=self._on_close),
+        )
+
+        dev_callbacks = DevWindowCallbacks(
             on_refresh_windows=capture.list_window_titles,
             on_browse_tesseract=self._browse_tesseract,
             on_select_zone=self._select_zone,
@@ -69,10 +80,10 @@ class App:
             on_open_external=self._open_external,
             on_config_changed=self._persist_config_from_ui,
             on_auto_calibrate=self._auto_calibrate_threshold,
-            on_close=self._on_close,
+            on_clear_errors=self._clear_errors,
         )
-        self.window = MainWindow(self.config, callbacks)
-        self.window.set_zone(self.config.zone)
+        self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
+        self.dev_window.set_zone(self.config.zone)
 
         self.tray = TrayIcon(
             on_show=lambda: self.window.after(0, self._show_window),
@@ -80,14 +91,23 @@ class App:
         )
         self.tray.start()
 
-        self.window.log("Application prête.")
+        self.dev_window.log("Application prête.")
         self.window.after(UI_REFRESH_MS, self._refresh_tick)
 
-        if "--minimized" in sys.argv:
+        # Prod : une fois configurée, l'appli se réduit direct dans la zone
+        # de notification au lancement, sans action manuelle. Tant qu'elle
+        # n'est pas configurée, la fenêtre reste visible pour la calibration.
+        if "--minimized" in sys.argv or self.config.is_ready:
             self.window.withdraw()
 
         if self.config.is_ready:
             self.start()
+            self._auto_open_external()
+
+    # ---- fenêtre dev -----------------------------------------------------
+
+    def _toggle_dev_window(self) -> None:
+        self.dev_window.toggle()
 
     # ---- actions déclenchées par l'UI --------------------------------
 
@@ -98,7 +118,7 @@ class App:
         return path or None
 
     def _persist_config_from_ui(self) -> None:
-        for key, value in self.window.current_config_values(self.config).items():
+        for key, value in self.dev_window.current_config_values(self.config).items():
             setattr(self.config, key, value)
         engine.set_tesseract_path(self.config.tesseract_path)
         self.tracker.resync_tolerance_seconds = self.config.resync_tolerance_seconds
@@ -106,7 +126,7 @@ class App:
         self.config.save()
 
     def _select_zone(self) -> None:
-        title = self.window.window_var.get().strip()
+        title = self.dev_window.window_var.get().strip()
         if not title:
             messagebox.showwarning("Attention", "Sélectionnez d'abord une fenêtre.")
             return
@@ -115,33 +135,35 @@ class App:
             messagebox.showerror("Erreur", f"Capture impossible pour « {title} ».")
             return
         self.config.window_title = title
-        selector = ZoneSelector(self.window, img, self.config.zone)
-        self.window.wait_window(selector)
+        selector = ZoneSelector(self.dev_window, img, self.config.zone)
+        self.dev_window.wait_window(selector)
         if selector.result:
             self.config.zone = selector.result
-            self.window.set_zone(self.config.zone)
+            self.dev_window.set_zone(self.config.zone)
             self.config.save()
-            self.window.log(f"Zone définie : {self.window.format_zone(self.config.zone)}")
+            self.dev_window.log(f"Zone définie : {self.dev_window.format_zone(self.config.zone)}")
 
     def _test_ocr(self) -> None:
         img = self._capture_zone()
         if img is None:
-            self.window.log("Capture impossible. Vérifiez fenêtre et zone.")
+            self.dev_window.log("Capture impossible. Vérifiez fenêtre et zone.")
             return
         text = self._read_raw_text(img)
-        self.window.set_preview_image(img)
+        self.dev_window.set_preview_image(img)
         reading = parse_strict(text)
         if reading is None:
-            self.window.log(f"Test OCR : « {text} » (format non reconnu)" if text else "Test OCR : aucun texte lu.")
+            self.dev_window.log(
+                f"Test OCR : « {text} » (format non reconnu)" if text else "Test OCR : aucun texte lu."
+            )
             return
         laps = f" ({reading.laps_done}/{reading.laps_total})" if reading.has_laps else ""
-        self.window.log(f"Test OCR : « {text} » -> {reading.time_text}{laps} ✓")
+        self.dev_window.log(f"Test OCR : « {text} » -> {reading.time_text}{laps} ✓")
 
     def _auto_calibrate_threshold(self) -> None:
         if not self.config.window_title or not self.config.zone:
             messagebox.showwarning("Attention", "Sélectionnez une fenêtre et définissez la zone d'abord.")
             return
-        self.window.log(f"Calibration automatique du seuil en cours ({CALIBRATION_SAMPLES} échantillons)...")
+        self.dev_window.log(f"Calibration automatique du seuil en cours ({CALIBRATION_SAMPLES} échantillons)...")
         threading.Thread(target=self._run_calibration, daemon=True).start()
 
     def _run_calibration(self) -> None:
@@ -156,12 +178,12 @@ class App:
 
     def _on_calibration_done(self, best: Optional[int]) -> None:
         if best is None:
-            self.window.log("Calibration échouée : aucun seuil ne donne une lecture valide. Vérifiez la zone.")
+            self.dev_window.log("Calibration échouée : aucun seuil ne donne une lecture valide. Vérifiez la zone.")
             return
         self.config.threshold = best
-        self.window.set_threshold(best)
+        self.dev_window.set_threshold(best)
         self.config.save()
-        self.window.log(f"Seuil calibré automatiquement : {best}")
+        self.dev_window.log(f"Seuil calibré automatiquement : {best}")
 
     def start(self) -> None:
         if self.running:
@@ -172,14 +194,14 @@ class App:
         self._persist_config_from_ui()
         self.running = True
         self.tracker.reset()
-        self.window.set_running(True)
-        self.window.log("OCR démarré.")
+        self.dev_window.set_running(True)
+        self.dev_window.log("OCR démarré.")
         threading.Thread(target=self._ocr_loop, daemon=True).start()
 
     def stop(self) -> None:
         self.running = False
-        self.window.set_running(False)
-        self.window.log("OCR arrêté.")
+        self.dev_window.set_running(False)
+        self.dev_window.log("OCR arrêté.")
 
     # ---- boucle OCR (thread d'arrière-plan) ---------------------------
 
@@ -214,7 +236,7 @@ class App:
 
     def _on_capture_success(self, img: Image.Image, text: str) -> None:
         self.health.record_capture_success()
-        self.window.set_preview_image(img)
+        self.dev_window.set_preview_image(img)
         now = time.monotonic()
 
         if self.tracker.state == SessionState.RUNNING:
@@ -228,15 +250,15 @@ class App:
     def _handle_events(self, events: list[SessionEvent]) -> None:
         for event in events:
             if event == SessionEvent.ARMED:
-                self.window.log("Chiffre détecté — en attente de confirmation (doit diminuer).")
+                self.dev_window.log("Chiffre détecté — en attente de confirmation (doit diminuer).")
             elif event == SessionEvent.STARTED:
-                self.window.log("Départ détecté — minuterie démarrée.")
+                self.dev_window.log("Départ détecté — minuterie démarrée.")
             elif event == SessionEvent.RESYNCED:
-                self.window.log("Resynchronisation sur lecture OCR (écart détecté).")
+                self.dev_window.log("Resynchronisation sur lecture OCR (écart détecté).")
             elif event == SessionEvent.STOPPED:
                 result = self.tracker.last_completed
                 label = _REASON_LABELS[result.reason]
-                self.window.log(f"Session terminée ({label}) : {result.time_text}")
+                self.dev_window.log(f"Session terminée ({label}) : {result.time_text}")
                 self.logger.info("Session terminée (%s) : %s", result.reason.name, result.time_text)
 
     # ---- rafraîchissement UI (indépendant de la boucle OCR) ------------
@@ -259,7 +281,7 @@ class App:
                 self.external_display.set_health(status)
             else:
                 self.external_display = None
-                self.window.set_external_open(False)
+                self.dev_window.set_external_open(False)
 
         self.window.after(UI_REFRESH_MS, self._refresh_tick)
 
@@ -281,33 +303,67 @@ class App:
         # chaque changement de fenêtre) -> l'icône colorée dans la zone de
         # notification suffit, l'historique reste dans le log.
         self.window.set_health(status)
+        self.dev_window.set_health(status)
         self.tray.set_status(status)
         if status != self._last_health_status:
             if status == HealthStatus.ERROR:
+                self._error_count += 1
+                self._last_error_wall = time.monotonic()
                 self.logger.warning("Passage en état ERROR")
             elif self._last_health_status == HealthStatus.ERROR:
                 self.logger.info("Sortie de l'état ERROR")
         self._last_health_status = status
+        self.dev_window.set_diagnostics(self._error_count, self._format_since_last_error())
+
+    def _clear_errors(self) -> None:
+        self._error_count = 0
+        self._last_error_wall = None
+        self.dev_window.set_diagnostics(0, self._format_since_last_error())
+        self.dev_window.log("Compteur d'erreurs réinitialisé.")
+
+    def _format_since_last_error(self) -> str:
+        if self._last_error_wall is None:
+            return "aucune erreur"
+        elapsed = int(time.monotonic() - self._last_error_wall)
+        suffix = " (en cours)" if self._last_health_status == HealthStatus.ERROR else ""
+        if elapsed < 60:
+            return f"{elapsed}s{suffix}"
+        if elapsed < 3600:
+            return f"{elapsed // 60}min {elapsed % 60}s{suffix}"
+        return f"{elapsed // 3600}h {(elapsed % 3600) // 60}min{suffix}"
 
     # ---- affichage externe ---------------------------------------------
 
     def _open_external(self) -> None:
-        # Repli fiable pour fermer l'affichage externe : la fenêtre principale
+        # Repli fiable pour fermer l'affichage externe : la fenêtre dev
         # a toujours le focus normalement, contrairement à l'écran plein écran.
         if self.external_display is not None and self.external_display.winfo_exists():
             self.external_display.destroy()
             self.external_display = None
-            self.window.set_external_open(False)
-            self.window.log("Affichage externe fermé.")
+            self.dev_window.set_external_open(False)
+            self.dev_window.log("Affichage externe fermé.")
             return
-        ScreenPicker(self.window, on_selected=self._open_external_on)
+        ScreenPicker(self.dev_window, on_selected=self._open_external_on)
 
     def _open_external_on(self, monitor: MonitorInfo) -> None:
         if self.external_display is not None and self.external_display.winfo_exists():
             self.external_display.destroy()
         self.external_display = ExternalDisplay(self.window, monitor)
-        self.window.set_external_open(True)
-        self.window.log(f"Affichage externe ouvert sur {monitor.label}.")
+        self.dev_window.set_external_open(True)
+        self.dev_window.log(f"Affichage externe ouvert sur {monitor.label}.")
+        self.config.external_monitor_index = monitor.index
+        self.config.save()
+
+    def _auto_open_external(self) -> None:
+        """Rouvre l'affichage externe sur l'écran mémorisé au démarrage,
+        sans action manuelle (config déjà prête = usage prod)."""
+        if self.config.external_monitor_index is None:
+            return
+        match = next(
+            (m for m in list_monitors() if m.index == self.config.external_monitor_index), None
+        )
+        if match is not None:
+            self._open_external_on(match)
 
     # ---- cycle de vie ----------------------------------------------------
 
@@ -319,12 +375,14 @@ class App:
     def _on_close(self) -> None:
         self._persist_config_from_ui()
         self.window.withdraw()
-        self.window.log("Réduit dans la zone de notification.")
+        self.dev_window.withdraw()
+        self.dev_window.log("Réduit dans la zone de notification.")
 
     def _really_quit(self) -> None:
         self.running = False
         self._persist_config_from_ui()
         self.tray.stop()
+        self.dev_window.destroy()
         self.window.destroy()
 
     def run(self) -> None:

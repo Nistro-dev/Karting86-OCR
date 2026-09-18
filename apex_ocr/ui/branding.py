@@ -25,6 +25,13 @@ def load_logo() -> Optional[Image.Image]:
         return None
 
 
+def build_status_icon(size: int, tint: tuple[int, int, int], alpha: float = 0.40) -> Image.Image:
+    """Logo carré teinté d'une couleur de statut (icône fenêtre/systray)."""
+    base = build_square_icon(size).convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (*tint, int(255 * alpha)))
+    return Image.alpha_composite(base, overlay)
+
+
 def build_square_icon(size: int = 256) -> Image.Image:
     """Compose le logo (rectangulaire) sur un canevas carré, pour l'icône
     exe / fenêtre / systray."""
