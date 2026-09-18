@@ -26,13 +26,15 @@ _STATUS_LABELS = {
 
 
 def build_default_icon_image(size: int = 64):
-    """Icône par défaut (logo, sans teinte de statut) — utilisée pour l'exe/l'icône de fenêtre initiale."""
+    """Icône par défaut (logo carré, sans teinte de statut) — utilisée pour l'exe/l'icône de fenêtre initiale."""
     return branding.build_square_icon(size)
 
 
 class TrayIcon:
     def __init__(self, on_show: Callable[[], None], on_quit: Callable[[], None]):
-        self._icons = {status: branding.build_status_icon(64, tint) for status, tint in _TINTS.items()}
+        self._icons = {
+            status: branding.build_status_icon(64, tint, round_shape=True) for status, tint in _TINTS.items()
+        }
         self._icon: Optional[pystray.Icon] = None
         self._on_show = on_show
         self._on_quit = on_quit
