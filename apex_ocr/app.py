@@ -97,6 +97,7 @@ class App:
             on_led_scan=self._led_scan,
             on_led_toggle=self._led_toggle,
             on_led_color=self._led_set_color,
+            on_led_laps_only=self._led_set_laps_only,
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
         self.dev_window.set_zone(self.config.zone)
@@ -294,7 +295,7 @@ class App:
         display = current_display(self.tracker, now)
         self.window.set_display(display)
         self._sync_output(display)
-        self.led.show(panel_content(self.tracker.state, display))
+        self.led.show(panel_content(self.tracker.state, display, laps_only=self.config.led_laps_only))
         self._refresh_led_status()
 
         status = self.health.status_for(self.tracker.state)
@@ -372,6 +373,11 @@ class App:
         self.config.save()
         self.led.set_color(rgb)
         self.dev_window.log("Couleur du panneau LED : #%02x%02x%02x" % tuple(rgb))
+
+    def _led_set_laps_only(self, enabled: bool) -> None:
+        self.config.led_laps_only = enabled
+        self.config.save()
+        self.dev_window.log("Panneau LED : " + ("tours seuls" if enabled else "chrono + tours"))
 
     def _apply_health_status(self, status: HealthStatus) -> None:
         # Pas de notification Windows ici (trop intrusif : se déclenchait à
