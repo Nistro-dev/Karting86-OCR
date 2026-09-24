@@ -21,6 +21,8 @@ from PIL import Image
 from apex_ocr import capture
 from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthMonitor, HealthStatus
+from apex_ocr.led.content import panel_content
+from apex_ocr.led.panel import LedPanel, LedStatus
 from apex_ocr.logging_setup import setup_logging
 from apex_ocr.ocr import engine
 from apex_ocr.ocr.calibration import calibrate_threshold
@@ -38,6 +40,8 @@ from apex_ocr.ui.zone_selector import ZoneSelector
 UI_REFRESH_MS = 200
 CALIBRATION_SAMPLES = 5
 CALIBRATION_SAMPLE_INTERVAL_S = 0.25
+AUTO_EXTERNAL_RETRY_INTERVAL_MS = 2000
+AUTO_EXTERNAL_MAX_ATTEMPTS = 150  # ~5min au total avant d'abandonner
 
 _REASON_LABELS = {
     StopReason.TIME_ZERO: "temps écoulé",
@@ -65,6 +69,14 @@ class App:
         self.running = False
         self.external_display: Optional[ExternalDisplay] = None
 
+        self.led = LedPanel(
+            self.config.led_width,
+            self.config.led_height,
+            tuple(self.config.led_color),
+            self.logger,
+        )
+        self._last_led_status: Optional[tuple[LedStatus, str]] = None
+
         self.window = MainWindow(
             self.config,
             MainWindowCallbacks(on_toggle_dev=self._toggle_dev_window, on_close=self._on_close),
@@ -81,9 +93,13 @@ class App:
             on_config_changed=self._persist_config_from_ui,
             on_auto_calibrate=self._auto_calibrate_threshold,
             on_clear_errors=self._clear_errors,
+            on_led_scan=self._led_scan,
+            on_led_toggle=self._led_toggle,
+            on_led_color=self._led_set_color,
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
         self.dev_window.set_zone(self.config.zone)
+        self.dev_window.set_led_enabled(self.config.led_enabled)
 
         self.tray = TrayIcon(
             on_show=lambda: self.window.after(0, self._show_window),
@@ -103,6 +119,12 @@ class App:
         if self.config.is_ready:
             self.start()
             self._auto_open_external()
+
+        # Indépendant de la config OCR : le panneau se (re)connecte tout seul
+        # au lancement, puis retente en arrière-plan s'il est éteint/hors de portée.
+        if self.config.led_enabled and self.config.led_address:
+            self.logger.info("Connexion automatique au panneau LED %s...", self.config.led_address)
+            self.led.connect(self.config.led_address)
 
     # ---- fenêtre dev -----------------------------------------------------
 
@@ -271,6 +293,8 @@ class App:
         display = current_display(self.tracker, now)
         self.window.set_display(display)
         self._sync_output(display)
+        self.led.show(panel_content(self.tracker.state, display))
+        self._refresh_led_status()
 
         status = self.health.status_for(self.tracker.state)
         self._apply_health_status(status)
@@ -297,6 +321,56 @@ class App:
         if display.is_live:
             laps = f" ({display.laps_done}/{display.laps_total})" if display.laps_total is not None else ""
             self.logger.info("Timer %s%s", display.time_text, laps)
+
+    # ---- panneau LED ----------------------------------------------------
+
+    def _refresh_led_status(self) -> None:
+        current = (self.led.status, self.led.status_detail)
+        if current != self._last_led_status:
+            self._last_led_status = current
+            self.dev_window.set_led_status(*current)
+
+    def _led_scan(self) -> None:
+        self.dev_window.set_led_scanning(True)
+        self.dev_window.log("Scan des panneaux LED à proximité...")
+        self.led.scan().add_done_callback(lambda fut: self.window.after(0, self._on_led_scan_done, fut))
+
+    def _on_led_scan_done(self, fut) -> None:
+        self.dev_window.set_led_scanning(False)
+        try:
+            devices = fut.result()
+        except Exception as exc:
+            self.dev_window.log(f"Scan LED impossible : {exc}")
+            return
+        self.config.led_known_devices = [list(d) for d in devices]
+        self.config.save()
+        self.dev_window.set_led_devices(devices, select_first=True)
+        self.dev_window.log(f"{len(devices)} panneau(x) LED trouvé(s).")
+
+    def _led_toggle(self) -> None:
+        if self.config.led_enabled:
+            self.config.led_enabled = False
+            self.config.save()
+            self.led.disconnect()
+            self.dev_window.set_led_enabled(False)
+            self.dev_window.log("Panneau LED déconnecté.")
+            return
+        address = self.dev_window.led_address_input()
+        if not address:
+            messagebox.showwarning("Attention", "Scannez ou saisissez l'adresse du panneau LED.")
+            return
+        self.config.led_address = address
+        self.config.led_enabled = True
+        self.config.save()
+        self.led.connect(address)
+        self.dev_window.set_led_enabled(True)
+        self.dev_window.log(f"Connexion au panneau LED {address}...")
+
+    def _led_set_color(self, rgb: tuple) -> None:
+        self.config.led_color = list(rgb)
+        self.config.save()
+        self.led.set_color(rgb)
+        self.dev_window.log("Couleur du panneau LED : #%02x%02x%02x" % tuple(rgb))
 
     def _apply_health_status(self, status: HealthStatus) -> None:
         # Pas de notification Windows ici (trop intrusif : se déclenchait à
@@ -356,14 +430,49 @@ class App:
 
     def _auto_open_external(self) -> None:
         """Rouvre l'affichage externe sur l'écran mémorisé au démarrage,
-        sans action manuelle (config déjà prête = usage prod)."""
+        sans action manuelle (config déjà prête = usage prod).
+
+        Réessaie plusieurs fois : au boot, un écran externe (souvent un
+        contrôleur/convertisseur piste) peut mettre plusieurs secondes à
+        être détecté par Windows, donc absent de ``list_monitors()`` au
+        tout premier essai ne veut pas dire indisponible."""
         if self.config.external_monitor_index is None:
             return
+        self.logger.info(
+            "Recherche de l'écran externe #%d au démarrage...", self.config.external_monitor_index
+        )
+        self._try_auto_open_external(attempt=1)
+
+    def _try_auto_open_external(self, attempt: int) -> None:
         match = next(
             (m for m in list_monitors() if m.index == self.config.external_monitor_index), None
         )
         if match is not None:
             self._open_external_on(match)
+            self.logger.info(
+                "Affichage externe ouvert automatiquement sur %s (tentative %d/%d).",
+                match.label, attempt, AUTO_EXTERNAL_MAX_ATTEMPTS,
+            )
+            return
+
+        if attempt >= AUTO_EXTERNAL_MAX_ATTEMPTS:
+            self.logger.warning(
+                "Écran externe #%d introuvable après %d tentatives (~%.0fs). "
+                "Ouverture manuelle nécessaire (Ctrl+Maj+D -> Affichage externe).",
+                self.config.external_monitor_index,
+                attempt,
+                attempt * AUTO_EXTERNAL_RETRY_INTERVAL_MS / 1000,
+            )
+            return
+
+        self.logger.info(
+            "Écran externe #%d pas encore détecté (tentative %d/%d), nouvel essai dans %.0fs.",
+            self.config.external_monitor_index,
+            attempt,
+            AUTO_EXTERNAL_MAX_ATTEMPTS,
+            AUTO_EXTERNAL_RETRY_INTERVAL_MS / 1000,
+        )
+        self.window.after(AUTO_EXTERNAL_RETRY_INTERVAL_MS, self._try_auto_open_external, attempt + 1)
 
     # ---- cycle de vie ----------------------------------------------------
 
@@ -381,6 +490,7 @@ class App:
     def _really_quit(self) -> None:
         self.running = False
         self._persist_config_from_ui()
+        self.led.shutdown()
         self.tray.stop()
         self.dev_window.destroy()
         self.window.destroy()

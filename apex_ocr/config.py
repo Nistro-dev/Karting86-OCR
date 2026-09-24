@@ -35,6 +35,14 @@ class AppConfig:
     ocr_lost_timeout_seconds: float = 10.0
     log_retention_days: int = 30
     external_monitor_index: Optional[int] = None
+    # Panneau LED Bluetooth (iPixel Color, voir apex_ocr/led) : reconnexion
+    # automatique au lancement si led_enabled et une adresse est mémorisée.
+    led_address: str = ""
+    led_enabled: bool = False
+    led_known_devices: list[list[str]] = field(default_factory=list)  # [[nom, adresse], ...] du dernier scan
+    led_width: int = 64
+    led_height: int = 16
+    led_color: list[int] = field(default_factory=lambda: [255, 30, 20])
 
     @classmethod
     def load(cls) -> "AppConfig":
