@@ -46,6 +46,9 @@ class DevWindowCallbacks:
     on_led_scan: Callable[[], None]
     on_led_toggle: Callable[[], None]
     on_led_color: Callable[[tuple], None]
+    on_led_alert_color: Callable[[tuple], None]
+    on_led_alert_seconds: Callable[[int], None]
+    on_led_alert_laps: Callable[[int], None]
     on_led_laps_only: Callable[[bool], None]
 
 
@@ -222,6 +225,32 @@ class DevWindow(ctk.CTkToplevel):
             command=lambda: self._cb.on_led_laps_only(self.led_laps_only_var.get()),
         ).pack(side="left", padx=(10, 0))
 
+        row = ctk.CTkFrame(led_frame, fg_color="transparent")
+        row.pack(fill="x", **pad)
+        ctk.CTkLabel(row, text="Alerte :", width=100, anchor="w").pack(side="left")
+        ctk.CTkLabel(row, text="Couleur :").pack(side="left")
+        self._led_alert_color_hex = "#%02x%02x%02x" % tuple(config.led_alert_color)
+        self.led_alert_color_btn = ctk.CTkButton(
+            row, text="", width=60, fg_color=self._led_alert_color_hex, hover_color=self._led_alert_color_hex,
+            border_width=1, border_color="#8a8a8a", command=self._on_pick_led_alert_color,
+        )
+        self.led_alert_color_btn.pack(side="left", padx=6)
+        digit_vcmd_led = (self.register(self._validate_digits), "%P")
+        ctk.CTkLabel(row, text="Dernières").pack(side="left", padx=(6, 2))
+        self.led_alert_seconds_var = tk.StringVar(value=str(config.led_alert_seconds))
+        ctk.CTkEntry(
+            row, textvariable=self.led_alert_seconds_var, width=45, validate="key", validatecommand=digit_vcmd_led,
+        ).pack(side="left")
+        ctk.CTkLabel(row, text="s").pack(side="left", padx=(2, 8))
+        ctk.CTkLabel(row, text="/").pack(side="left", padx=(0, 8))
+        self.led_alert_laps_var = tk.StringVar(value=str(config.led_alert_laps))
+        ctk.CTkEntry(
+            row, textvariable=self.led_alert_laps_var, width=35, validate="key", validatecommand=digit_vcmd_led,
+        ).pack(side="left")
+        ctk.CTkLabel(row, text="derniers tours").pack(side="left", padx=(2, 0))
+        self.led_alert_seconds_var.trace_add("write", lambda *_: self._on_alert_seconds_changed())
+        self.led_alert_laps_var.trace_add("write", lambda *_: self._on_alert_laps_changed())
+
     def _on_pick_led_color(self) -> None:
         rgb, hex_ = colorchooser.askcolor(color=self._led_color_hex, parent=self, title="Couleur du texte LED")
         if rgb is None:
@@ -229,6 +258,24 @@ class DevWindow(ctk.CTkToplevel):
         self._led_color_hex = hex_
         self.led_color_btn.configure(fg_color=hex_, hover_color=hex_)
         self._cb.on_led_color(tuple(int(c) for c in rgb))
+
+    def _on_pick_led_alert_color(self) -> None:
+        rgb, hex_ = colorchooser.askcolor(color=self._led_alert_color_hex, parent=self, title="Couleur d'alerte LED")
+        if rgb is None:
+            return
+        self._led_alert_color_hex = hex_
+        self.led_alert_color_btn.configure(fg_color=hex_, hover_color=hex_)
+        self._cb.on_led_alert_color(tuple(int(c) for c in rgb))
+
+    def _on_alert_seconds_changed(self) -> None:
+        text = self.led_alert_seconds_var.get().strip()
+        if text and text.isdigit():
+            self._cb.on_led_alert_seconds(int(text))
+
+    def _on_alert_laps_changed(self) -> None:
+        text = self.led_alert_laps_var.get().strip()
+        if text and text.isdigit():
+            self._cb.on_led_alert_laps(int(text))
 
     @staticmethod
     def _led_label(name: str, address: str) -> str:

@@ -73,6 +73,7 @@ class App:
             self.config.led_width,
             self.config.led_height,
             tuple(self.config.led_color),
+            tuple(self.config.led_alert_color),
             self.logger,
         )
         self._last_led_status: Optional[tuple[LedStatus, str]] = None
@@ -97,6 +98,9 @@ class App:
             on_led_scan=self._led_scan,
             on_led_toggle=self._led_toggle,
             on_led_color=self._led_set_color,
+            on_led_alert_color=self._led_set_alert_color,
+            on_led_alert_seconds=self._led_set_alert_seconds,
+            on_led_alert_laps=self._led_set_alert_laps,
             on_led_laps_only=self._led_set_laps_only,
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
@@ -295,7 +299,12 @@ class App:
         display = current_display(self.tracker, now)
         self.window.set_display(display)
         self._sync_output(display)
-        self.led.show(panel_content(self.tracker.state, display, laps_only=self.config.led_laps_only))
+        self.led.show(panel_content(
+            self.tracker.state, display,
+            laps_only=self.config.led_laps_only,
+            alert_seconds=self.config.led_alert_seconds,
+            alert_laps=self.config.led_alert_laps,
+        ))
         self._refresh_led_status()
 
         status = self.health.status_for(self.tracker.state)
@@ -378,6 +387,20 @@ class App:
         self.config.led_laps_only = enabled
         self.config.save()
         self.dev_window.log("Panneau LED : " + ("tours seuls" if enabled else "chrono + tours"))
+
+    def _led_set_alert_color(self, rgb: tuple) -> None:
+        self.config.led_alert_color = list(rgb)
+        self.config.save()
+        self.led.set_alert_color(rgb)
+        self.dev_window.log("Couleur d'alerte LED : #%02x%02x%02x" % tuple(rgb))
+
+    def _led_set_alert_seconds(self, seconds: int) -> None:
+        self.config.led_alert_seconds = seconds
+        self.config.save()
+
+    def _led_set_alert_laps(self, laps: int) -> None:
+        self.config.led_alert_laps = laps
+        self.config.save()
 
     def _apply_health_status(self, status: HealthStatus) -> None:
         # Pas de notification Windows ici (trop intrusif : se déclenchait à
