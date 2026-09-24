@@ -46,6 +46,7 @@ class AppConfig:
     led_width: int = 64
     led_height: int = 16
     led_color: list[int] = field(default_factory=lambda: [255, 30, 20])
+    led_laps_only: bool = False
 
     @classmethod
     def load(cls) -> "AppConfig":

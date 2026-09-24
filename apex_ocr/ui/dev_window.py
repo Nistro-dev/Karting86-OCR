@@ -46,6 +46,7 @@ class DevWindowCallbacks:
     on_led_scan: Callable[[], None]
     on_led_toggle: Callable[[], None]
     on_led_color: Callable[[tuple], None]
+    on_led_laps_only: Callable[[bool], None]
 
 
 class DevWindow(ctk.CTkToplevel):
@@ -215,6 +216,11 @@ class DevWindow(ctk.CTkToplevel):
             border_width=1, border_color="#8a8a8a", command=self._on_pick_led_color,
         )
         self.led_color_btn.pack(side="left", padx=6)
+        self.led_laps_only_var = tk.BooleanVar(value=config.led_laps_only)
+        ctk.CTkSwitch(
+            row, text="Tours seuls", variable=self.led_laps_only_var, width=60,
+            command=lambda: self._cb.on_led_laps_only(self.led_laps_only_var.get()),
+        ).pack(side="left", padx=(10, 0))
 
     def _on_pick_led_color(self) -> None:
         rgb, hex_ = colorchooser.askcolor(color=self._led_color_hex, parent=self, title="Couleur du texte LED")
