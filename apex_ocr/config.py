@@ -36,7 +36,8 @@ class AppConfig:
     log_retention_days: int = 30
     external_monitor_index: Optional[int] = None
     # Désactivé : l'affichage externe ne s'ouvre jamais (ni au démarrage, ni via le bouton).
-    external_enabled: bool = True
+    # Désactivé par défaut : à activer dans la fenêtre dev seulement s'il y a un écran piste.
+    external_enabled: bool = False
     # Panneau LED Bluetooth (iPixel Color, voir apex_ocr/led) : reconnexion
     # automatique au lancement si led_enabled et une adresse est mémorisée.
     led_address: str = ""
