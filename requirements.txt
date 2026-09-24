@@ -6,3 +6,4 @@ mss
 pygetwindow
 pywin32
 pystray
+bleak>=0.22

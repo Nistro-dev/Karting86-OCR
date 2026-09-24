@@ -15,6 +15,7 @@ Apex Timing ne propose ni API ni port local pour récupérer ces données. Cette
 - Conçu pour tourner en production toute la journée sans supervision : récupère sa configuration au démarrage, retente en arrière-plan si la fenêtre source n'est pas encore ouverte, et remonte un statut de santé dans la zone de notification (gris = attente, vert = course suivie, rouge = problème). Pas de notification Windows (trop intrusif), l'historique reste dans le log
 - Calibration automatique du seuil (bouton **Auto**) : teste plusieurs captures dans le temps sur une plage de seuils et retient le plus robuste
 - Habillage aux couleurs New Kart Poitiers (logo, palette rouge/noir) sur la fenêtre principale, l'icône et l'affichage externe
+- **Panneau LED Bluetooth** (iPixel Color 64×16, même panneau que [newkart-led-panel](https://github.com/Nistro-dev/newkart-led-panel)) : le minuteur (et les tours s'il y en a) s'affiche sur le panneau pendant la course, écran vide le reste du temps. Scan des panneaux à proximité, reconnexion automatique au lancement et en cas de coupure, luminosité toujours à 100 %, couleur du texte au choix
 - Écriture du timer courant dans `timer.txt` (lisible par une appli externe) et journal applicatif avec rotation quotidienne (rétention configurable)
 - `test_timer.html` : page web autonome simulant un chrono Apex Timing (avec ou sans tours) pour tester l'OCR sans l'application réelle
 
@@ -44,6 +45,8 @@ Calibration initiale (dans la fenêtre dev) :
 3. Cliquer **Test OCR** pour vérifier la détection et le format reconnu
 4. Cliquer **Auto** à côté du seuil pour calibrer automatiquement (ou ajuster manuellement si besoin)
 5. Cliquer **Affichage externe**, survoler la liste pour repérer l'écran (cadre rouge), choisir : ouverture directe en plein écran. L'écran choisi est mémorisé et se rouvre automatiquement aux lancements suivants. Pour fermer : re-cliquer **Affichage externe** dans la fenêtre dev (le plus fiable), ou le petit ✕ discret en haut à droite de l'écran externe
+
+6. *(optionnel)* Panneau LED : allumer le panneau, cliquer **Scanner** dans la ligne « Panneau LED », choisir le panneau `LED_BLE_...` puis **Connecter** (l'écran du panneau est vidé). Le bouton **Couleur** change la couleur du texte. Le panneau est mémorisé : l'appli s'y reconnecte toute seule aux lancements suivants, et retente en arrière-plan s'il est éteint ou hors de portée
 
 Une fois fenêtre + zone configurées, l'OCR démarre automatiquement à chaque lancement, la fenêtre principale se réduit direct dans la zone de notification, et l'affichage externe se rouvre sur l'écran mémorisé — aucune action manuelle requise en usage normal. Utiliser **Quitter** dans le menu de l'icône systray pour arrêter complètement l'application.
 
@@ -89,6 +92,11 @@ apex_ocr/
     zone_selector.py          sélection de la zone à la souris
     screen_picker.py          liste des écrans connectés (+ repère visuel au survol)
     external_display.py       affichage plein écran (piste)
+  led/
+    panel.py                  connexion BLE au panneau LED (reconnexion auto, envoi de la dernière valeur)
+    content.py                ce que le panneau affiche selon l'état de la session (pure logique, testée)
+    rendering.py              rendu du texte en image 64×16
+    protocol.py               paquets BLE iPixel Color (repris de newkart-led-panel)
     tray.py                   icône systray multi-états
     branding.py               logo + palette New Kart Poitiers
     theme_newkart.json        thème CustomTkinter (rouge/noir, dérivé du logo)

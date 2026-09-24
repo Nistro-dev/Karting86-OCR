@@ -3,7 +3,9 @@ externe. Masquée par défaut, ouverte via le raccourci Ctrl+Maj+D sur la
 fenêtre principale (voir ``MainWindow``)."""
 from __future__ import annotations
 
+import re
 import tkinter as tk
+from tkinter import colorchooser
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -12,11 +14,19 @@ from PIL import Image, ImageTk
 
 from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthStatus
+from apex_ocr.led.panel import LedStatus
 
 _HEALTH_LABELS = {
     HealthStatus.IDLE: ("En attente", "#8a8a8a"),
     HealthStatus.ACTIVE: ("Course suivie", "#00c94a"),
     HealthStatus.ERROR: ("Problème", "#ED1B24"),
+}
+
+_LED_LABELS = {
+    LedStatus.DISABLED: ("Non connecté", "#8a8a8a"),
+    LedStatus.CONNECTING: ("Connexion...", "#e0a000"),
+    LedStatus.CONNECTED: ("Connecté", "#00c94a"),
+    LedStatus.RETRYING: ("Reconnexion...", "#ED1B24"),
 }
 
 
@@ -32,6 +42,9 @@ class DevWindowCallbacks:
     on_config_changed: Callable[[], None]
     on_auto_calibrate: Callable[[], None]
     on_clear_errors: Callable[[], None]
+    on_led_scan: Callable[[], None]
+    on_led_toggle: Callable[[], None]
+    on_led_color: Callable[[tuple], None]
 
 
 class DevWindow(ctk.CTkToplevel):
@@ -39,8 +52,8 @@ class DevWindow(ctk.CTkToplevel):
         super().__init__(parent)
         self._cb = callbacks
         self.title("Apex Timing OCR — Dev")
-        self.geometry("720x660")
-        self.minsize(620, 540)
+        self.geometry("720x760")
+        self.minsize(620, 640)
         # Fermer la fenêtre (croix, Échap) la cache plutôt que la détruit :
         # elle garde son état (journal, aperçu) prête à rouvrir instantanément.
         self.protocol("WM_DELETE_WINDOW", self.withdraw)
@@ -119,6 +132,8 @@ class DevWindow(ctk.CTkToplevel):
         ).pack(side="left")
         ctk.CTkLabel(row, text="s sans lecture valide avant d'arrêter la session").pack(side="left", padx=4)
 
+        self._build_led_frame(config, pad)
+
         prev_frame = ctk.CTkFrame(self)
         prev_frame.pack(fill="x", padx=14, pady=8)
         ctk.CTkLabel(prev_frame, text="Aperçu zone capturée", anchor="w").pack(fill="x", padx=8, pady=(6, 0))
@@ -161,6 +176,56 @@ class DevWindow(ctk.CTkToplevel):
         self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
 
         self.refresh_windows(config.window_title)
+
+    def _build_led_frame(self, config: AppConfig, pad: dict) -> None:
+        led_frame = ctk.CTkFrame(self)
+        led_frame.pack(fill="x", padx=14, pady=8)
+
+        row = ctk.CTkFrame(led_frame, fg_color="transparent")
+        row.pack(fill="x", **pad)
+        ctk.CTkLabel(row, text="Panneau LED :", width=100, anchor="w").pack(side="left")
+        self.led_var = tk.StringVar(value=self._led_label_for(config.led_address, config.led_known_devices))
+        self.led_combo = ctk.CTkComboBox(row, variable=self.led_var, values=[], width=300)
+        self.led_combo.pack(side="left", padx=(0, 6))
+        self.set_led_devices(config.led_known_devices)
+        self.led_scan_btn = ctk.CTkButton(row, text="Scanner", width=80, command=self._cb.on_led_scan)
+        self.led_scan_btn.pack(side="left", padx=(0, 6))
+        self.led_connect_btn = ctk.CTkButton(row, text="Connecter", width=100, command=self._cb.on_led_toggle)
+        self.led_connect_btn.pack(side="left")
+
+        row = ctk.CTkFrame(led_frame, fg_color="transparent")
+        row.pack(fill="x", **pad)
+        ctk.CTkLabel(row, text="Statut :", width=100, anchor="w").pack(side="left")
+        self.led_dot = tk.Canvas(row, width=14, height=14, highlightthickness=0)
+        self.led_dot.pack(side="left")
+        self._led_dot_id = self.led_dot.create_oval(2, 2, 12, 12, fill="#8a8a8a", outline="")
+        self.led_status_lbl = ctk.CTkLabel(row, text="Non connecté", width=230, anchor="w")
+        self.led_status_lbl.pack(side="left", padx=(6, 10))
+        ctk.CTkLabel(row, text="Couleur :").pack(side="left")
+        self._led_color_hex = "#%02x%02x%02x" % tuple(config.led_color)
+        self.led_color_btn = ctk.CTkButton(
+            row, text="", width=60, fg_color=self._led_color_hex, hover_color=self._led_color_hex,
+            border_width=1, border_color="#8a8a8a", command=self._on_pick_led_color,
+        )
+        self.led_color_btn.pack(side="left", padx=6)
+
+    def _on_pick_led_color(self) -> None:
+        rgb, hex_ = colorchooser.askcolor(color=self._led_color_hex, parent=self, title="Couleur du texte LED")
+        if rgb is None:
+            return
+        self._led_color_hex = hex_
+        self.led_color_btn.configure(fg_color=hex_, hover_color=hex_)
+        self._cb.on_led_color(tuple(int(c) for c in rgb))
+
+    @staticmethod
+    def _led_label(name: str, address: str) -> str:
+        return f"{name} ({address})"
+
+    def _led_label_for(self, address: str, devices: list) -> str:
+        for name, addr in devices:
+            if addr == address:
+                return self._led_label(name, addr)
+        return address
 
     def _on_browse_tess(self) -> None:
         path = self._cb.on_browse_tesseract()
@@ -243,6 +308,32 @@ class DevWindow(ctk.CTkToplevel):
 
     def set_external_open(self, is_open: bool) -> None:
         self.external_btn.configure(text="Fermer l'affichage externe" if is_open else "Affichage externe")
+
+    def led_address_input(self) -> str:
+        """Adresse saisie ou choisie : « LED_BLE_x (AA:BB:...) » ou adresse brute."""
+        value = self.led_var.get().strip()
+        match = re.search(r"\(([^()]+)\)\s*$", value)
+        return match.group(1).strip() if match else value
+
+    def set_led_devices(self, devices: list, select_first: bool = False) -> None:
+        labels = [self._led_label(n, a) for n, a in devices]
+        self.led_combo.configure(values=labels)
+        if select_first and labels:
+            self.led_var.set(labels[0])
+
+    def set_led_scanning(self, scanning: bool) -> None:
+        self.led_scan_btn.configure(state="disabled" if scanning else "normal",
+                                    text="Scan..." if scanning else "Scanner")
+
+    def set_led_enabled(self, enabled: bool) -> None:
+        self.led_connect_btn.configure(text="Déconnecter" if enabled else "Connecter")
+
+    def set_led_status(self, status: LedStatus, detail: str = "") -> None:
+        label, color = _LED_LABELS[status]
+        if detail and status == LedStatus.RETRYING:
+            label = f"{label} ({detail[:40]})"
+        self.led_dot.itemconfig(self._led_dot_id, fill=color)
+        self.led_status_lbl.configure(text=label)
 
     def set_health(self, status: HealthStatus) -> None:
         label, color = _HEALTH_LABELS[status]
