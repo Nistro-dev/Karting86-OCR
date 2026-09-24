@@ -101,6 +101,8 @@ class SessionTracker:
         self._decrease_streak = 0
         self._cancel_streak = 0
         self._cancel_candidate: Optional[float] = None
+        self._resync_streak = 0
+        self._resync_candidate: Optional[float] = None
         self._session_start_wall: Optional[float] = None
         self._session_start_seconds: int = 0
         self._last_good_time_wall: Optional[float] = None
@@ -115,6 +117,8 @@ class SessionTracker:
         self._decrease_streak = 0
         self._cancel_streak = 0
         self._cancel_candidate = None
+        self._resync_streak = 0
+        self._resync_candidate = None
         self._session_start_wall = None
         self._last_good_time_wall = None
         self._laps_done = None
@@ -175,6 +179,8 @@ class SessionTracker:
         self._last_good_time_wall = now
         self._cancel_streak = 0
         self._cancel_candidate = None
+        self._resync_streak = 0
+        self._resync_candidate = None
 
     def on_lenient_reading(self, reading: LenientReading, now: float) -> list[SessionEvent]:
         """Lecture tolérante : utilisée pendant ``RUNNING``."""
@@ -228,9 +234,20 @@ class SessionTracker:
                     self._cancel_streak = 0
                     self._cancel_candidate = None
                     if drift < -self.resync_tolerance_seconds:
-                        self._session_start_wall = now
-                        self._session_start_seconds = seconds
-                        events.append(SessionEvent.RESYNCED)
+                        if self._resync_candidate is not None and abs(seconds - self._resync_candidate) <= self.resync_tolerance_seconds:
+                            self._resync_streak += 1
+                        else:
+                            self._resync_streak = 1
+                        self._resync_candidate = seconds
+                        if self._resync_streak >= self.required_confirmations:
+                            self._session_start_wall = now
+                            self._session_start_seconds = seconds
+                            self._resync_streak = 0
+                            self._resync_candidate = None
+                            events.append(SessionEvent.RESYNCED)
+                    else:
+                        self._resync_streak = 0
+                        self._resync_candidate = None
         elif (
             self._last_good_time_wall is not None
             and now - self._last_good_time_wall >= self.ocr_lost_timeout_seconds
