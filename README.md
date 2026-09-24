@@ -139,7 +139,19 @@ py -m pytest
 
 ## Build de l'exe et de l'installeur
 
+### Sur une machine de dev (outils déjà installés)
+
 `build\build.bat` automatise tout (installe Python/Inno Setup si besoin via winget, installe les dépendances, génère l'icône, compile l'exe avec PyInstaller puis l'installeur avec Inno Setup). Résultat : `dist_installer\ApexTimingOCR_Setup.exe`.
+
+### Sur une machine sans rien (ex : PC client)
+
+Ouvrir PowerShell et coller :
+
+```powershell
+irm https://raw.githubusercontent.com/Nistro-dev/Karting86-OCR/main/build/build_and_cleanup.ps1 | iex
+```
+
+Le script installe Git, Python et Inno Setup si nécessaire, clone le repo, build l'installateur, le copie sur le Bureau, puis **désinstalle tout** ce qu'il a installé. Rien ne reste sur la machine à part `ApexTimingOCR_Setup.exe` sur le Bureau.
 
 ## Stack technique
 
