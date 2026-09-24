@@ -50,14 +50,35 @@ Calibration initiale (dans la fenêtre dev) :
 
 Une fois fenêtre + zone configurées, l'OCR démarre automatiquement à chaque lancement, la fenêtre principale se réduit direct dans la zone de notification, et l'affichage externe se rouvre sur l'écran mémorisé — aucune action manuelle requise en usage normal. Utiliser **Quitter** dans le menu de l'icône systray pour arrêter complètement l'application.
 
-## Sortie
+## Fichiers, journal et configuration
 
-| Emplacement | Contenu |
+Tout est stocké dans **`%LOCALAPPDATA%\ApexTimingOCR\`**, c'est-à-dire `C:\Users\<utilisateur>\AppData\Local\ApexTimingOCR\`. Ce dossier n'est pas celui d'installation, et il est conservé lors des mises à jour.
+
+| Fichier | Contenu |
 |---|---|
-| `timer.txt` | Temps actuel (écrasé à chaque changement) |
-| `logs/apex_ocr.log` | Journal horodaté (changements de timer + incidents), rotation quotidienne |
+| `logs\apex_ocr.log` | **Journal** du jour |
+| `logs\apex_ocr.log.AAAA-MM-JJ` | Journaux des jours précédents (un fichier par jour, conservés 30 jours) |
+| `config.json` | Configuration : fenêtre source, zone, seuil, écran externe, panneau LED (adresse, couleur) |
+| `timer.txt` | Temps actuel, réécrit à chaque changement (lisible par une appli externe) |
 
-Ces fichiers (ainsi que `config.json`) sont stockés dans `%LOCALAPPDATA%\ApexTimingOCR\`.
+### Ouvrir le journal
+
+1. `Win + R`
+2. Coller `%LOCALAPPDATA%\ApexTimingOCR\logs` puis Entrée
+3. Ouvrir `apex_ocr.log` avec le Bloc-notes
+
+Le journal est horodaté (`date | niveau | message`) et contient :
+- chaque changement du timer pendant une course (`INFO | Timer 09:35 (3/20)`)
+- les fins de session et leur cause (temps écoulé, course annulée, signal perdu)
+- les incidents : `WARNING | Passage en état ERROR` (capture/OCR en échec), puis `Sortie de l'état ERROR` au retour à la normale
+- le panneau LED : connexion (`Panneau LED : CONNECTED`), reconnexions (`RETRYING` + raison) et envois échoués
+- l'affichage externe : réouverture automatique au démarrage, ou écran introuvable
+
+Pour chercher uniquement les problèmes, filtrer les lignes qui contiennent `WARNING`.
+
+Le cadre « Journal » de la fenêtre dev (`Ctrl+Maj+D`) n'affiche que les messages de la session en cours et n'est pas sauvegardé : pour l'historique, utiliser le fichier `apex_ocr.log`.
+
+Pour repartir de zéro (nouvelle calibration, oublier le panneau LED), quitter l'appli et supprimer `config.json`.
 
 ## Limites connues
 
