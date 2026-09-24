@@ -45,7 +45,10 @@ class AppConfig:
     led_known_devices: list[list[str]] = field(default_factory=list)  # [[nom, adresse], ...] du dernier scan
     led_width: int = 64
     led_height: int = 16
-    led_color: list[int] = field(default_factory=lambda: [255, 30, 20])
+    led_color: list[int] = field(default_factory=lambda: [0, 255, 0])
+    led_alert_color: list[int] = field(default_factory=lambda: [255, 0, 0])
+    led_alert_seconds: int = 60
+    led_alert_laps: int = 5
     led_laps_only: bool = False
 
     @classmethod

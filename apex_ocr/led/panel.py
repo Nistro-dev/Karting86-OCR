@@ -48,9 +48,11 @@ class LedStatus(Enum):
 
 
 class LedPanel:
-    def __init__(self, width: int, height: int, rgb: tuple, logger: logging.Logger):
+    def __init__(self, width: int, height: int, rgb: tuple, alert_rgb: tuple, logger: logging.Logger):
         self._width = width
         self._height = height
+        self._rgb = rgb
+        self._alert_rgb = alert_rgb
         self._renderer = TimerRenderer(width, height, rgb)
         self._logger = logger
 
@@ -91,6 +93,9 @@ class LedPanel:
     def set_color(self, rgb: tuple) -> None:
         self._call(self._set_color, tuple(rgb))
 
+    def set_alert_color(self, rgb: tuple) -> None:
+        self._call(self._set_alert_color, tuple(rgb))
+
     def scan(self, timeout: float = 6.0) -> Future:
         """Future -> liste de (nom, adresse) des panneaux ``LED_BLE_*`` à proximité."""
         return asyncio.run_coroutine_threadsafe(self._scan(timeout), self._loop)
@@ -117,8 +122,14 @@ class LedPanel:
         self._wake.set()
 
     def _set_color(self, rgb: tuple) -> None:
+        self._rgb = rgb
         self._renderer.rgb = rgb
-        self._sent = _UNSENT  # force le renvoi du contenu actuel dans la nouvelle couleur
+        self._sent = _UNSENT
+        self._wake.set()
+
+    def _set_alert_color(self, rgb: tuple) -> None:
+        self._alert_rgb = rgb
+        self._sent = _UNSENT
         self._wake.set()
 
     def _on_ble_disconnect(self, _client: BleakClient) -> None:
@@ -201,6 +212,8 @@ class LedPanel:
         if content is None:
             png = blank_png(self._width, self._height)
         else:
+            rgb = self._alert_rgb if content.alert else self._rgb
+            self._renderer.rgb = rgb
             png = self._renderer.render(content.time_text, content.laps_text)
         await self._write(build_png_packet(png))
 
