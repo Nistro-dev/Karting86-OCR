@@ -44,7 +44,7 @@ Calibration initiale (dans la fenêtre dev) :
 2. Cliquer **Définir la zone** et dessiner un rectangle autour du timer (et du compteur de tours s'il est présent dans la même zone)
 3. Cliquer **Test OCR** pour vérifier la détection et le format reconnu
 4. Cliquer **Auto** à côté du seuil pour calibrer automatiquement (ou ajuster manuellement si besoin)
-5. Cliquer **Affichage externe**, survoler la liste pour repérer l'écran (cadre rouge), choisir : ouverture directe en plein écran. L'écran choisi est mémorisé et se rouvre automatiquement aux lancements suivants. Pour fermer : re-cliquer **Affichage externe** dans la fenêtre dev (le plus fiable), ou le petit ✕ discret en haut à droite de l'écran externe
+5. Cliquer **Affichage externe**, survoler la liste pour repérer l'écran (cadre rouge), choisir : ouverture directe en plein écran. L'écran choisi est mémorisé et se rouvre automatiquement aux lancements suivants. L'interrupteur **Activé** à côté du bouton permet de désactiver complètement l'affichage externe (il se ferme et ne se rouvre plus au démarrage) quand il n'y a pas d'écran piste. Pour fermer : re-cliquer **Affichage externe** dans la fenêtre dev (le plus fiable), ou le petit ✕ discret en haut à droite de l'écran externe
 
 6. *(optionnel)* Panneau LED : allumer le panneau, cliquer **Scanner** dans la ligne « Panneau LED », choisir le panneau `LED_BLE_...` puis **Connecter** (l'écran du panneau est vidé). Le bouton **Couleur** change la couleur du texte. Le panneau est mémorisé : l'appli s'y reconnecte toute seule aux lancements suivants, et retente en arrière-plan s'il est éteint ou hors de portée
 
