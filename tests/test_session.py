@@ -117,10 +117,14 @@ def test_time_not_updated_directly_only_resynced_beyond_tolerance():
     assert SessionEvent.RESYNCED not in events
     assert t.live_display(now=7.0).time_text == "09:53"
 
-    # grand écart -> resync
+    # grand écart -> 1ère lecture candidate, pas encore de resync
     events = t.on_lenient_reading(lenient(time_text="09:39"), now=7.0)
+    assert SessionEvent.RESYNCED not in events
+
+    # 2ème lecture cohérente -> resync confirmée
+    events = t.on_lenient_reading(lenient(time_text="09:38"), now=8.0)
     assert SessionEvent.RESYNCED in events
-    assert t.live_display(now=7.0).time_text == "09:39"
+    assert t.live_display(now=8.0).time_text == "09:38"
 
 
 def test_format_self_heals_if_first_arming_reading_missed_the_hour_digit():
