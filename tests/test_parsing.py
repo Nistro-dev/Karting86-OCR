@@ -109,6 +109,21 @@ def test_parse_lenient_detects_laps_even_if_not_seen_before():
     assert r.time_text == "07:32"
 
 
+def test_parse_lenient_laps_digits_not_eaten_by_time():
+    # "14/15 01:12" brouillé par l'OCR en "15 0112" : le "15" des tours ne
+    # doit pas être avalé par la regex temps pour créer un faux "15:01".
+    r = parse_lenient("14/15 01:12")
+    assert r.laps_done == 14 and r.laps_total == 15
+    assert r.time_text == "01:12"
+
+
+def test_parse_lenient_slash_missing_falls_back():
+    # Sans '/', on ne peut pas distinguer tours et temps : le parsing fait
+    # de son mieux sans garantie.
+    r = parse_lenient("15 0112")
+    assert r.time_text is not None  # au moins le temps est extrait
+
+
 def test_repair_colons():
     assert repair_colons("732") == "7:32"
     assert repair_colons("0732") == "07:32"

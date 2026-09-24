@@ -153,15 +153,50 @@ def parse_strict(raw_text: str) -> Optional[StrictReading]:
     return StrictReading(time_text=time_text, laps_done=laps_done, laps_total=laps_total)
 
 
+def _strip_laps_token(text: str) -> tuple[str, Optional[re.Match]]:
+    """Retire le motif de tours (tt/tt) et renvoie le texte restant + le match."""
+    match = _LAPS_RE.search(text)
+    if not match:
+        return text, None
+    remainder = (text[: match.start()] + text[match.end() :]).strip()
+    return remainder, match
+
+
 def parse_lenient(raw_text: str) -> LenientReading:
     """Tente toujours d'extraire les tours (même si absents jusqu'ici) : sinon
-    on ne détecterait jamais leur apparition en cours de session."""
-    text = clean_raw(raw_text)
-    time_text = extract_time(text)
-    remainder, _ = _strip_time_token(text)
+    on ne détecterait jamais leur apparition en cours de session.
 
-    laps_done = laps_total = None
-    laps = extract_laps(remainder)
-    if laps is not None:
-        laps_done, laps_total = laps
+    Quand un ':' ET un '/' sont présents, on essaie les deux ordres d'extraction
+    (temps-d'abord vs tours-d'abord) et on garde celui qui extrait le plus
+    d'information : sinon la regex temps peut avaler les chiffres des tours
+    (ex: "14/15 01:12" brouillé en "150112" → faux temps "15:01") ou la regex
+    tours peut avaler les chiffres du temps (ex: "0/2010:00" → faux total 201)."""
+    text = clean_raw(raw_text)
+
+    # Stratégie 1 : temps d'abord (ordre historique, évite que les tours
+    # avalent le début du temps quand il n'y a pas d'espace).
+    remainder_t, _ = _strip_time_token(text)
+    time1 = extract_time(text)
+    laps1 = extract_laps(remainder_t)
+
+    # Stratégie 2 : tours d'abord (évite que le temps avale les chiffres
+    # des tours quand le '/' est absent du texte brouillé).
+    remainder_l, laps_match = _strip_laps_token(text)
+    time2 = extract_time(remainder_l) if laps_match else None
+    laps2 = (int(laps_match.group(1)), int(laps_match.group(2))) if laps_match else None
+
+    # Choisir la stratégie qui extrait le plus : préférer celle qui a à la
+    # fois un temps ET des tours ; à égalité, préférer temps-d'abord (1).
+    score1 = (time1 is not None) + (laps1 is not None)
+    score2 = (time2 is not None) + (laps2 is not None)
+
+    if score2 > score1:
+        time_text = time2
+        laps_done = laps2[0] if laps2 else None
+        laps_total = laps2[1] if laps2 else None
+    else:
+        time_text = time1
+        laps_done = laps1[0] if laps1 else None
+        laps_total = laps1[1] if laps1 else None
+
     return LenientReading(time_text=time_text, laps_done=laps_done, laps_total=laps_total)
