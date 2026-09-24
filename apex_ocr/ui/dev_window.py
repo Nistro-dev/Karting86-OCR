@@ -39,6 +39,7 @@ class DevWindowCallbacks:
     on_start: Callable[[], None]
     on_stop: Callable[[], None]
     on_open_external: Callable[[], None]
+    on_external_enabled: Callable[[bool], None]
     on_config_changed: Callable[[], None]
     on_auto_calibrate: Callable[[], None]
     on_clear_errors: Callable[[], None]
@@ -148,6 +149,12 @@ class DevWindow(ctk.CTkToplevel):
         self.stop_btn.pack(side="left", padx=4)
         self.external_btn = ctk.CTkButton(btn_row, text="Affichage externe", command=self._cb.on_open_external)
         self.external_btn.pack(side="left", padx=4)
+        self.external_enabled_var = tk.BooleanVar(value=config.external_enabled)
+        ctk.CTkSwitch(
+            btn_row, text="Activé", variable=self.external_enabled_var, width=60,
+            command=lambda: self._cb.on_external_enabled(self.external_enabled_var.get()),
+        ).pack(side="left", padx=(2, 4))
+        self.set_external_enabled(config.external_enabled)
         ctk.CTkButton(btn_row, text="Test OCR", command=self._cb.on_test_ocr).pack(side="right", padx=4)
 
         diag_frame = ctk.CTkFrame(self)
@@ -305,6 +312,9 @@ class DevWindow(ctk.CTkToplevel):
     def set_running(self, running: bool) -> None:
         self.start_btn.configure(state="disabled" if running else "normal")
         self.stop_btn.configure(state="normal" if running else "disabled")
+
+    def set_external_enabled(self, enabled: bool) -> None:
+        self.external_btn.configure(state="normal" if enabled else "disabled")
 
     def set_external_open(self, is_open: bool) -> None:
         self.external_btn.configure(text="Fermer l'affichage externe" if is_open else "Affichage externe")

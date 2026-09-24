@@ -35,6 +35,8 @@ class AppConfig:
     ocr_lost_timeout_seconds: float = 10.0
     log_retention_days: int = 30
     external_monitor_index: Optional[int] = None
+    # Désactivé : l'affichage externe ne s'ouvre jamais (ni au démarrage, ni via le bouton).
+    external_enabled: bool = True
     # Panneau LED Bluetooth (iPixel Color, voir apex_ocr/led) : reconnexion
     # automatique au lancement si led_enabled et une adresse est mémorisée.
     led_address: str = ""

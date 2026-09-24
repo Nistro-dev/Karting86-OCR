@@ -90,6 +90,7 @@ class App:
             on_start=self.start,
             on_stop=self.stop,
             on_open_external=self._open_external,
+            on_external_enabled=self._set_external_enabled,
             on_config_changed=self._persist_config_from_ui,
             on_auto_calibrate=self._auto_calibrate_threshold,
             on_clear_errors=self._clear_errors,
@@ -419,6 +420,20 @@ class App:
             return
         ScreenPicker(self.dev_window, on_selected=self._open_external_on)
 
+    def _set_external_enabled(self, enabled: bool) -> None:
+        self.config.external_enabled = enabled
+        self.config.save()
+        self.dev_window.set_external_enabled(enabled)
+        if enabled:
+            self.dev_window.log("Affichage externe activé.")
+            self._auto_open_external()
+            return
+        if self.external_display is not None and self.external_display.winfo_exists():
+            self.external_display.destroy()
+        self.external_display = None
+        self.dev_window.set_external_open(False)
+        self.dev_window.log("Affichage externe désactivé (ne s'ouvrira plus au démarrage).")
+
     def _open_external_on(self, monitor: MonitorInfo) -> None:
         if self.external_display is not None and self.external_display.winfo_exists():
             self.external_display.destroy()
@@ -436,6 +451,9 @@ class App:
         contrôleur/convertisseur piste) peut mettre plusieurs secondes à
         être détecté par Windows, donc absent de ``list_monitors()`` au
         tout premier essai ne veut pas dire indisponible."""
+        if not self.config.external_enabled:
+            self.logger.info("Affichage externe désactivé : pas d'ouverture automatique.")
+            return
         if self.config.external_monitor_index is None:
             return
         self.logger.info(
@@ -444,6 +462,9 @@ class App:
         self._try_auto_open_external(attempt=1)
 
     def _try_auto_open_external(self, attempt: int) -> None:
+        # désactivé entre-temps (ou déjà ouvert à la main) : on arrête les essais
+        if not self.config.external_enabled or self.external_display is not None:
+            return
         match = next(
             (m for m in list_monitors() if m.index == self.config.external_monitor_index), None
         )
