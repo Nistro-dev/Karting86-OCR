@@ -50,7 +50,7 @@ class AppConfig:
     led_alert_seconds: int = 60
     led_alert_laps: int = 5
     led_laps_only: bool = False
-    log_level: str = "INFO"
+    log_level: str = "DEBUG"
 
     @classmethod
     def load(cls) -> "AppConfig":
