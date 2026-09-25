@@ -173,13 +173,31 @@ def test_laps_reading_lower_than_known_is_ignored_as_noise():
     t.on_strict_reading(strict("09:59", laps_done=0, laps_total=20), now=1.0)
     t.on_strict_reading(strict("09:58", laps_done=0, laps_total=20), now=2.0)
 
-    t.on_lenient_reading(lenient(time_text="09:57", laps_done=5, laps_total=20), now=3.0)
-    assert t.live_display(now=3.0).laps_done == 5
+    # incréments normaux (+1, +1) : acceptés directement
+    t.on_lenient_reading(lenient(time_text="09:57", laps_done=1, laps_total=20), now=3.0)
+    t.on_lenient_reading(lenient(time_text="09:56", laps_done=2, laps_total=20), now=4.0)
+    assert t.live_display(now=4.0).laps_done == 2
 
-    # lecture aberrante (5 mal lu comme 1) : ignorée, on garde 5
-    events = t.on_lenient_reading(lenient(time_text="09:56", laps_done=1, laps_total=20), now=4.0)
+    # lecture aberrante (2 mal lu comme 0) : ignorée, on garde 2
+    events = t.on_lenient_reading(lenient(time_text="09:55", laps_done=0, laps_total=20), now=5.0)
     assert SessionEvent.LAPS_UPDATED not in events
-    assert t.live_display(now=4.0).laps_done == 5
+    assert t.live_display(now=5.0).laps_done == 2
+
+
+def test_laps_large_jump_requires_confirmations():
+    t = SessionTracker()
+    t.on_strict_reading(strict("10:00", laps_done=0, laps_total=20), now=0.0)
+    t.on_strict_reading(strict("09:59", laps_done=0, laps_total=20), now=1.0)
+    t.on_strict_reading(strict("09:58", laps_done=0, laps_total=20), now=2.0)
+
+    # saut de 0→5 : suspect, pas accepté immédiatement
+    t.on_lenient_reading(lenient(time_text="09:57", laps_done=5, laps_total=20), now=3.0)
+    assert t.live_display(now=3.0).laps_done == 0
+
+    # confirmations successives (besoin de 5 pour un saut de +5)
+    for i in range(4):
+        t.on_lenient_reading(lenient(time_text="09:56", laps_done=5, laps_total=20), now=4.0 + i)
+    assert t.live_display(now=7.0).laps_done == 5
 
 
 def test_live_display_shows_new_value_immediately_while_cancellation_pending():
@@ -290,12 +308,16 @@ def test_armed_display_replaces_stale_frozen_result_from_previous_session():
     t.tick(now=100.0)  # bien après la fin -> TIME_ZERO, fige last_completed
     assert t.last_completed is not None
 
-    # une nouvelle lecture statique arrive (nouveau format/nouvelle source)
+    # juste après l'arrêt : grâce de 5s, is_live=True pour éviter le flash horloge
     d = current_display(t, now=101.0)
-    assert not d.is_live and d.time_text == t.last_completed.time_text  # encore figé, rien lu
+    assert d.is_live and d.time_text == t.last_completed.time_text
 
-    t.on_strict_reading(strict("10:00"), now=102.0)
-    d = current_display(t, now=102.0)
+    # après la grâce : is_live=False
+    d = current_display(t, now=106.0)
+    assert not d.is_live and d.time_text == t.last_completed.time_text
+
+    t.on_strict_reading(strict("10:00"), now=107.0)
+    d = current_display(t, now=107.0)
     assert d.time_text == "10:00" and d.is_live  # remplace l'ancien résultat figé
 
 
@@ -311,5 +333,9 @@ def test_current_display_placeholder_then_live_then_frozen():
     assert d.time_text == "00:02" and d.is_live
 
     t.tick(now=4.0)
+    # dans la grâce (5s) : is_live=True pour éviter le flash horloge sur le panneau LED
     d = current_display(t, now=4.0)
+    assert d.time_text == "00:00" and d.is_live
+    # après la grâce
+    d = current_display(t, now=10.0)
     assert d.time_text == "00:00" and not d.is_live

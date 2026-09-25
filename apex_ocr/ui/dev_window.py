@@ -50,6 +50,7 @@ class DevWindowCallbacks:
     on_led_alert_seconds: Callable[[int], None]
     on_led_alert_laps: Callable[[int], None]
     on_led_laps_only: Callable[[bool], None]
+    on_log_level: Callable[[str], None]
 
 
 class DevWindow(ctk.CTkToplevel):
@@ -182,7 +183,17 @@ class DevWindow(ctk.CTkToplevel):
 
         log_frame = ctk.CTkFrame(self)
         log_frame.pack(fill="both", expand=True, padx=14, pady=(8, 14))
-        ctk.CTkLabel(log_frame, text="Journal", anchor="w").pack(fill="x", padx=8, pady=(6, 0))
+        log_header = ctk.CTkFrame(log_frame, fg_color="transparent")
+        log_header.pack(fill="x", padx=8, pady=(6, 0))
+        ctk.CTkLabel(log_header, text="Journal", anchor="w").pack(side="left")
+        ctk.CTkLabel(log_header, text="Niveau :", anchor="w").pack(side="left", padx=(16, 4))
+        self.log_level_var = tk.StringVar(value=config.log_level)
+        log_level_menu = ctk.CTkOptionMenu(
+            log_header, variable=self.log_level_var,
+            values=["DEBUG", "INFO", "WARNING"],
+            width=100, command=lambda v: self._cb.on_log_level(v),
+        )
+        log_level_menu.pack(side="left")
         self.log_text = ctk.CTkTextbox(log_frame, height=140, state="disabled", font=("Consolas", 11))
         self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
 

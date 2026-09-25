@@ -23,7 +23,7 @@ from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthMonitor, HealthStatus
 from apex_ocr.led.content import panel_content
 from apex_ocr.led.panel import LedPanel, LedStatus
-from apex_ocr.logging_setup import setup_logging
+from apex_ocr.logging_setup import set_log_level, setup_logging
 from apex_ocr.ocr import engine
 from apex_ocr.ocr.calibration import calibrate_threshold
 from apex_ocr.ocr.parsing import parse_lenient, parse_strict
@@ -53,12 +53,13 @@ _REASON_LABELS = {
 class App:
     def __init__(self) -> None:
         self.config = AppConfig.load()
-        self.logger = setup_logging(self.config.log_retention_days)
+        self.logger = setup_logging(self.config.log_retention_days, self.config.log_level)
         engine.set_tesseract_path(self.config.tesseract_path)
 
         self.tracker = SessionTracker(
             resync_tolerance_seconds=self.config.resync_tolerance_seconds,
             ocr_lost_timeout_seconds=self.config.ocr_lost_timeout_seconds,
+            logger=self.logger,
         )
         self.health = HealthMonitor()
         self._last_health_status: Optional[HealthStatus] = None
@@ -102,6 +103,7 @@ class App:
             on_led_alert_seconds=self._led_set_alert_seconds,
             on_led_alert_laps=self._led_set_alert_laps,
             on_led_laps_only=self._led_set_laps_only,
+            on_log_level=self._set_log_level,
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
         self.dev_window.set_zone(self.config.zone)
@@ -269,9 +271,15 @@ class App:
 
         if self.tracker.state == SessionState.RUNNING:
             reading = parse_lenient(text)
+            self.logger.debug("OCR brut=%r → temps=%s tours=%s/%s",
+                              text.strip(), reading.time_text, reading.laps_done, reading.laps_total)
             events = self.tracker.on_lenient_reading(reading, now)
         else:
-            events = self.tracker.on_strict_reading(parse_strict(text), now)
+            strict = parse_strict(text)
+            if strict is not None:
+                self.logger.debug("OCR brut=%r → strict temps=%s tours=%s/%s",
+                                  text.strip(), strict.time_text, strict.laps_done, strict.laps_total)
+            events = self.tracker.on_strict_reading(strict, now)
 
         self._handle_events(events)
 
@@ -401,6 +409,12 @@ class App:
     def _led_set_alert_laps(self, laps: int) -> None:
         self.config.led_alert_laps = laps
         self.config.save()
+
+    def _set_log_level(self, level: str) -> None:
+        self.config.log_level = level
+        self.config.save()
+        set_log_level(level)
+        self.dev_window.log(f"Niveau de log : {level}")
 
     def _apply_health_status(self, status: HealthStatus) -> None:
         # Pas de notification Windows ici (trop intrusif : se déclenchait à

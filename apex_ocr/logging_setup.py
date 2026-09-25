@@ -15,13 +15,15 @@ from apex_ocr.paths import LOG_DIR
 _LOGGER_NAME = "apex_ocr"
 
 
-def setup_logging(retention_days: int = 30) -> logging.Logger:
+def setup_logging(retention_days: int = 30, level: str = "INFO") -> logging.Logger:
     os.makedirs(LOG_DIR, exist_ok=True)
     logger = logging.getLogger(_LOGGER_NAME)
+    log_level = getattr(logging, level.upper(), logging.INFO)
     if logger.handlers:
+        logger.setLevel(log_level)
         return logger
 
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level)
     handler = logging.handlers.TimedRotatingFileHandler(
         os.path.join(LOG_DIR, "apex_ocr.log"),
         when="midnight",
@@ -31,6 +33,13 @@ def setup_logging(retention_days: int = 30) -> logging.Logger:
     handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
     logger.addHandler(handler)
     return logger
+
+
+def set_log_level(level: str) -> None:
+    """Change le niveau de log à chaud."""
+    logger = logging.getLogger(_LOGGER_NAME)
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logger.setLevel(log_level)
 
 
 def get_logger() -> logging.Logger:
