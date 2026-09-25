@@ -115,8 +115,7 @@ def capture_window(title: str) -> Optional[Image.Image]:
             return img
 
     if w.isMinimized:
-        w.restore()
-        time.sleep(0.3)
+        return None  # pas de restore : ça ramènerait la fenêtre au premier plan
     try:
         with mss.mss() as sct:
             mon = {"left": w.left, "top": w.top, "width": w.width, "height": w.height}
