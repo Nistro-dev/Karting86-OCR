@@ -24,6 +24,7 @@ waiting -> armed -> running -> (stop) -> waiting
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
@@ -32,6 +33,14 @@ from apex_ocr.ocr.parsing import LenientReading, StrictReading, seconds_from_tim
 
 OCR_LOST_TIMEOUT_SECONDS = 10.0
 REQUIRED_CONFIRMATIONS = 2
+# Au-delà de ce seuil de drift (en secondes), on exige plus de confirmations
+# pour éviter qu'une erreur OCR récurrente (ex: 7 lu comme 3) ne déclenche
+# un faux resync ou cancel.
+LARGE_DRIFT_THRESHOLD = 30
+LARGE_DRIFT_CONFIRMATIONS = 5
+# Saut de tours maximum accepté sans confirmation. Au-delà, on exige autant
+# de confirmations que le saut (ex: +5 tours d'un coup = 5 lectures cohérentes).
+MAX_LAP_JUMP = 2
 
 
 class SessionState(Enum):
@@ -86,10 +95,12 @@ class SessionTracker:
         resync_tolerance_seconds: int = 3,
         ocr_lost_timeout_seconds: float = OCR_LOST_TIMEOUT_SECONDS,
         required_confirmations: int = REQUIRED_CONFIRMATIONS,
+        logger: Optional[logging.Logger] = None,
     ):
         self.resync_tolerance_seconds = resync_tolerance_seconds
         self.ocr_lost_timeout_seconds = ocr_lost_timeout_seconds
         self.required_confirmations = required_confirmations
+        self._log = logger or logging.getLogger(__name__)
         self.state = SessionState.WAITING
         self.last_completed: Optional[CompletedResult] = None
 
@@ -103,9 +114,12 @@ class SessionTracker:
         self._cancel_candidate: Optional[float] = None
         self._resync_streak = 0
         self._resync_candidate: Optional[float] = None
+        self._laps_jump_candidate: Optional[int] = None
+        self._laps_jump_streak = 0
         self._session_start_wall: Optional[float] = None
         self._session_start_seconds: int = 0
         self._last_good_time_wall: Optional[float] = None
+        self._last_stop_wall: Optional[float] = None
 
     @property
     def has_laps(self) -> bool:
@@ -119,6 +133,8 @@ class SessionTracker:
         self._cancel_candidate = None
         self._resync_streak = 0
         self._resync_candidate = None
+        self._laps_jump_candidate = None
+        self._laps_jump_streak = 0
         self._session_start_wall = None
         self._last_good_time_wall = None
         self._laps_done = None
@@ -182,6 +198,14 @@ class SessionTracker:
         self._resync_streak = 0
         self._resync_candidate = None
 
+    def _confirmations_needed(self, drift_abs: float) -> int:
+        """Plus le drift est grand, plus on exige de confirmations : un saut de
+        4 minutes (ex: 7:56→3:56) est presque certainement une erreur OCR, pas
+        une vraie avancée du timer."""
+        if drift_abs > LARGE_DRIFT_THRESHOLD:
+            return max(self.required_confirmations, LARGE_DRIFT_CONFIRMATIONS)
+        return self.required_confirmations
+
     def on_lenient_reading(self, reading: LenientReading, now: float) -> list[SessionEvent]:
         """Lecture tolérante : utilisée pendant ``RUNNING``."""
         if self.state != SessionState.RUNNING:
@@ -190,20 +214,45 @@ class SessionTracker:
         events: list[SessionEvent] = []
 
         if reading.laps_done is not None:
-            # Les tours ne redescendent jamais pendant une course : une
-            # lecture plus basse que ce qu'on a déjà confirmé est forcément
-            # du bruit OCR (ex: un 5 lu comme 1) -> on l'ignore.
-            # Atteindre le total de tours (ex: 20/20) n'arrête PAS la session :
-            # le temps peut continuer à tourner sur la source (tour de
-            # décélération, prolongation...) -> seul le temps qui s'arrête
-            # vraiment (TIME_ZERO/CANCELLED/OCR_LOST) arrête le suivi.
-            if self._laps_done is None or reading.laps_done >= self._laps_done:
-                self._has_laps = True
-                if reading.laps_done != self._laps_done:
-                    self._laps_done = reading.laps_done
-                    events.append(SessionEvent.LAPS_UPDATED)
-                if reading.laps_total:
-                    self._laps_total = reading.laps_total
+            if self._laps_done is not None and reading.laps_done < self._laps_done:
+                self._log.debug("Tours ignoré (recul) : OCR=%s, courant=%s", reading.laps_done, self._laps_done)
+                self._laps_jump_candidate = None
+                self._laps_jump_streak = 0
+            elif self._laps_done is None or reading.laps_done >= self._laps_done:
+                jump = (reading.laps_done - self._laps_done) if self._laps_done is not None else 0
+                if jump > MAX_LAP_JUMP:
+                    if self._laps_jump_candidate == reading.laps_done:
+                        self._laps_jump_streak += 1
+                    else:
+                        self._laps_jump_streak = 1
+                    self._laps_jump_candidate = reading.laps_done
+                    needed = max(self.required_confirmations, jump)
+                    self._log.warning(
+                        "Tours saut suspect : %s -> %s (+%d), streak=%d/%d",
+                        self._laps_done, reading.laps_done, jump,
+                        self._laps_jump_streak, needed,
+                    )
+                    if self._laps_jump_streak < needed:
+                        pass  # pas encore confirmé, on attend
+                    else:
+                        self._log.info("Tours saut confirmé : %s -> %s/%s", self._laps_done, reading.laps_done, reading.laps_total)
+                        self._has_laps = True
+                        self._laps_done = reading.laps_done
+                        self._laps_jump_candidate = None
+                        self._laps_jump_streak = 0
+                        events.append(SessionEvent.LAPS_UPDATED)
+                        if reading.laps_total:
+                            self._laps_total = reading.laps_total
+                else:
+                    self._laps_jump_candidate = None
+                    self._laps_jump_streak = 0
+                    self._has_laps = True
+                    if reading.laps_done != self._laps_done:
+                        self._log.info("Tours : %s -> %s/%s", self._laps_done, reading.laps_done, reading.laps_total)
+                        self._laps_done = reading.laps_done
+                        events.append(SessionEvent.LAPS_UPDATED)
+                    if reading.laps_total:
+                        self._laps_total = reading.laps_total
 
         if reading.time_text is not None:
             self._last_good_time_wall = now
@@ -212,22 +261,22 @@ class SessionTracker:
             if seconds is not None:
                 remaining = self._remaining_seconds(now)
                 drift = seconds - remaining
+                drift_abs = abs(drift)
+                needed = self._confirmations_needed(drift_abs)
+
                 if drift > self.resync_tolerance_seconds:
-                    # Le temps affiché a augmenté au lieu de descendre : la
-                    # source a été réinitialisée/annulée (ex: bouton "Stop"
-                    # sur Apex Timing qui revient au temps de base), pas un
-                    # simple bruit OCR -> on arrête la session sur cette
-                    # nouvelle valeur. Confirmé sur 2 lectures de suite pour
-                    # ne pas annuler une vraie course sur une frame bruitée ;
-                    # en attendant la confirmation, on affiche déjà la
-                    # nouvelle valeur (candidate) pour ne pas rester visible-
-                    # ment bloqué sur l'ancienne horloge interne.
                     if self._cancel_candidate is not None and abs(seconds - self._cancel_candidate) <= self.resync_tolerance_seconds:
                         self._cancel_streak += 1
                     else:
                         self._cancel_streak = 1
                     self._cancel_candidate = seconds
-                    if self._cancel_streak >= self.required_confirmations:
+                    self._log.warning(
+                        "Cancel candidat : OCR=%s, horloge=%s, drift=+%.0fs, streak=%d/%d",
+                        reading.time_text, time_from_seconds(remaining, self._with_hours),
+                        drift, self._cancel_streak, needed,
+                    )
+                    if self._cancel_streak >= needed:
+                        self._log.warning("Cancel confirmé après %d lectures", self._cancel_streak)
                         events.append(self._stop(StopReason.CANCELLED, now, override_seconds=seconds))
                         return events
                 else:
@@ -239,7 +288,17 @@ class SessionTracker:
                         else:
                             self._resync_streak = 1
                         self._resync_candidate = seconds
-                        if self._resync_streak >= self.required_confirmations:
+                        self._log.warning(
+                            "Resync candidat : OCR=%s, horloge=%s, drift=%.0fs, streak=%d/%d",
+                            reading.time_text, time_from_seconds(remaining, self._with_hours),
+                            drift, self._resync_streak, needed,
+                        )
+                        if self._resync_streak >= needed:
+                            self._log.info(
+                                "Resync confirmé : %s -> %s (après %d lectures)",
+                                time_from_seconds(remaining, self._with_hours),
+                                reading.time_text, self._resync_streak,
+                            )
                             self._session_start_wall = now
                             self._session_start_seconds = seconds
                             self._resync_streak = 0
@@ -252,6 +311,7 @@ class SessionTracker:
             self._last_good_time_wall is not None
             and now - self._last_good_time_wall >= self.ocr_lost_timeout_seconds
         ):
+            self._log.warning("Signal perdu depuis %.0fs", now - self._last_good_time_wall)
             events.append(self._stop(StopReason.OCR_LOST, now))
 
         return events
@@ -304,7 +364,12 @@ class SessionTracker:
             reason=reason,
         )
         self.reset()
+        self._last_stop_wall = now
         return SessionEvent.STOPPED
+
+
+_STOP_GRACE_SECONDS = 5.0  # après un arrêt, garder is_live=True pendant ce délai
+                           # pour éviter que le panneau LED flashe l'horloge
 
 
 def current_display(tracker: SessionTracker, now: float) -> DisplayValue:
@@ -319,5 +384,12 @@ def current_display(tracker: SessionTracker, now: float) -> DisplayValue:
         return DisplayValue(armed.time_text, armed.laps_done, armed.laps_total, is_live=True)
     completed = tracker.last_completed
     if completed is not None:
-        return DisplayValue(completed.time_text, completed.laps_done, completed.laps_total, is_live=False)
+        # Grâce après un arrêt : garder is_live=True quelques secondes pour
+        # que le panneau LED ne flashe pas l'horloge pendant un faux cancel
+        # suivi d'un réarmement immédiat.
+        recently_stopped = (
+            tracker._last_stop_wall is not None
+            and now - tracker._last_stop_wall < _STOP_GRACE_SECONDS
+        )
+        return DisplayValue(completed.time_text, completed.laps_done, completed.laps_total, is_live=recently_stopped)
     return DisplayValue("--:--", None, None, is_live=False)

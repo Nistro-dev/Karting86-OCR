@@ -41,7 +41,7 @@ def panel_content(
     En course (RUNNING) : chrono et tours (ou tours seuls si *laps_only*).
     Sinon : heure courante (HH:MM:SS)."""
     if state != SessionState.RUNNING or not display.is_live:
-        return PanelContent(time_text=time.strftime("%H:%M:%S"))
+        return PanelContent(time_text=time.strftime("%H:%M"))
     laps_text = None
     if display.laps_total is not None:
         digits = max(2, len(str(display.laps_total)))
