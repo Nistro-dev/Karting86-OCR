@@ -15,6 +15,8 @@ class PanelContent:
     time_text: str
     laps_text: Optional[str] = None
     alert: bool = False
+    clock: bool = False                # heure courante : image fixe, pas un décompte
+    alert_below: Optional[int] = None  # seuil (s) sous lequel les trames du décompte prennent la couleur d'alerte
 
 
 def _is_alert(display: DisplayValue, alert_seconds: int, alert_laps: int) -> bool:
@@ -39,9 +41,9 @@ def panel_content(
     """Contenu à afficher sur le panneau LED.
 
     En course (RUNNING) : chrono et tours (ou tours seuls si *laps_only*).
-    Sinon : heure courante (HH:MM:SS)."""
+    Sinon : heure courante (HH:MM, renvoyée au panneau à chaque changement de minute)."""
     if state != SessionState.RUNNING or not display.is_live:
-        return PanelContent(time_text=time.strftime("%H:%M"))
+        return PanelContent(time_text=time.strftime("%H:%M"), clock=True)
     laps_text = None
     if display.laps_total is not None:
         digits = max(2, len(str(display.laps_total)))
@@ -49,4 +51,4 @@ def panel_content(
     alert = _is_alert(display, alert_seconds, alert_laps)
     if laps_only and laps_text is not None:
         return PanelContent(time_text=laps_text, alert=alert)
-    return PanelContent(display.time_text, laps_text, alert=alert)
+    return PanelContent(display.time_text, laps_text, alert=alert, alert_below=alert_seconds)
