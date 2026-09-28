@@ -69,6 +69,12 @@ def hello_packet() -> bytes:
     return frame(0xFF, 0x04)
 
 
+def status_packet() -> bytes:
+    """Lecture de config (64 octets) : sert de battement de cœur pour vérifier que le
+    lien TCP est vivant. Sans effet sur l'affichage, fonctionne même sans login."""
+    return frame(0x82, 0x04)
+
+
 def is_challenge(reply: bytes) -> bool:
     return len(reply) >= 17 and reply[6:8] == b"\x59\xa0"
 

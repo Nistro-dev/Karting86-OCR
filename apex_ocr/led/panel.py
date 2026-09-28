@@ -30,8 +30,10 @@ from apex_ocr.led.rendering import (Frame, TimerRenderer, blank_frame, build_pro
 
 CONNECT_TIMEOUT_S = 5.0
 IO_TIMEOUT_S = 30.0
-RETRY_MIN_S = 3.0
-RETRY_MAX_S = 30.0
+HEARTBEAT_S = 4.0             # ping régulier : détecte un lien mort (Wi-Fi coupé) sans attendre un changement d'affichage
+HEARTBEAT_TIMEOUT_S = 3.0     # le ping n'attend pas 30 s si le panneau ne répond plus
+RETRY_MIN_S = 2.0
+RETRY_MAX_S = 5.0    # on retente souvent : après une coupure, la carte RHX8 garde son ancienne connexion un moment et il faut saisir le créneau dès qu'il se libère
 SHUTDOWN_TIMEOUT_S = 3.0
 RESYNC_TOLERANCE_S = 2         # écart toléré entre le temps demandé et la séquence en cours
 FROZEN_S = 2.5                 # valeur OCR inchangée depuis ce délai = chrono arrêté -> image fixe
@@ -102,6 +104,7 @@ class LedPanel:
         self._sock: Optional[socket.socket] = None
         self._sent: object = _UNSENT          # contenu (ou None) matérialisé par le programme envoyé
         self._seq: Optional[_Sequence] = None
+        self._last_io = 0.0                   # dernier échange réussi (pour cadencer le battement de cœur)
         self._upload_rate = float(UPLOAD_RATE_DEFAULT)
         self._last_requested: object = _UNSENT
         self._stopping = False
@@ -217,6 +220,8 @@ class LedPanel:
                     self._send_brightness()
                 if self._needs_send():
                     self._send_content(self._desired)
+                elif time.monotonic() - self._last_io >= HEARTBEAT_S:
+                    self._heartbeat()
                 else:
                     self._wait_wake(1.0)
             except Exception as exc:
@@ -275,6 +280,7 @@ class LedPanel:
             raise ConnectionError("login refusé (mot de passe ?)")
         self._sent = _UNSENT
         self._seq = None
+        self._last_io = time.monotonic()
         self._brightness_dirty = True
 
     def _xfer(self, packet: bytes) -> bytes:
@@ -284,7 +290,18 @@ class LedPanel:
         reply = self._sock.recv(64)
         if not reply:
             raise ConnectionError("connexion fermée")
+        self._last_io = time.monotonic()
         return reply
+
+    def _heartbeat(self) -> None:
+        """Vérifie que le lien est vivant ; en cas d'échec, l'exception fait passer le
+        panneau en RETRYING (traité dans _run), ce qui déclenche la reconnexion."""
+        self._sock.settimeout(HEARTBEAT_TIMEOUT_S)
+        try:
+            self._xfer(protocol.status_packet())
+        finally:
+            if self._sock is not None:
+                self._sock.settimeout(IO_TIMEOUT_S)
 
     def _send_brightness(self) -> None:
         reply = self._xfer(protocol.brightness_packet(self._brightness))

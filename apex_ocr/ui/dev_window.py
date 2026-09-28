@@ -421,8 +421,17 @@ class DevWindow(ctk.CTkToplevel):
         self.led_scan_btn.configure(state="disabled" if scanning else "normal",
                                     text="Test..." if scanning else "Tester")
 
-    def set_led_enabled(self, enabled: bool) -> None:
-        self.led_connect_btn.configure(text="Déconnecter" if enabled else "Connecter")
+    def set_led_control(self, wanted: bool, status: LedStatus) -> None:
+        """Libellé du bouton d'après l'état réel : « Déconnecter » seulement quand le
+        panneau est vraiment relié, « Annuler » pendant une tentative (sinon on
+        afficherait « Déconnecter » alors que rien n'est connecté), « Connecter » sinon."""
+        if not wanted:
+            text = "Connecter"
+        elif status == LedStatus.CONNECTED:
+            text = "Déconnecter"
+        else:
+            text = "Annuler"
+        self.led_connect_btn.configure(text=text)
 
     def set_led_status(self, status: LedStatus, detail: str = "") -> None:
         label, color = _LED_LABELS[status]

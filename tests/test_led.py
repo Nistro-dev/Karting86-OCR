@@ -207,6 +207,7 @@ class FakePanel:
         self.sockets: list["FakeSocket"] = []
         self.uploads: list[bytes] = []
         self.brightness: list[int] = []
+        self.heartbeats = 0
         self.fail_connects = 0
         self.upload_delay = 0.0
         self.password = PASSWORD
@@ -242,6 +243,9 @@ class FakePanel:
             return b"\x88"
         if op == 0x78:
             return b"\xe1"
+        if op == 0x82:                      # battement de cœur
+            self.heartbeats += 1
+            return bytes(64)
         return b"\x00"
 
     @property
@@ -531,6 +535,17 @@ def test_disconnect_clears_screen_and_closes(led, fake):
     assert fake.sockets[-1].closed
 
 
+def test_shutdown_blanks_the_panel(fake):
+    p = LedPanel(64, 16, RED_RGB, BLUE_RGB, logging.getLogger("test_led"), password=PASSWORD)
+    p.connect("192.168.47.1")
+    wait_until(lambda: p.status == LedStatus.CONNECTED and fake.uploads)
+    p.show(PanelContent("00:05"))
+    wait_until(lambda: len(fake.uploads) >= 2)
+    p.shutdown()                                  # « quitter » : l'écran est éteint et la connexion fermée
+    assert fake.last_frames == [Frame()]          # sinon le panneau bouclerait le dernier décompte
+    assert fake.sockets[-1].closed
+
+
 def test_color_change_resends_current_value(led, fake):
     led.connect("192.168.47.1")
     wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
@@ -546,6 +561,19 @@ def test_brightness_change_is_sent(led, fake):
     wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
     led.set_brightness(16)
     wait_until(lambda: fake.brightness == [7, 16])
+
+
+def test_heartbeat_detects_dead_link_without_new_content(led, fake, monkeypatch):
+    monkeypatch.setattr(panel_mod, "HEARTBEAT_S", 0.05)   # ping rapide pour le test
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
+    wait_until(lambda: fake.heartbeats >= 1)               # ping émis sans changement d'affichage
+    fake.fail_connects = 100                               # le Wi-Fi tombe : les reconnexions échouent aussi
+    fake.sockets[-1].dropped = True                        # lien courant coupé, aucun show() derrière
+    wait_until(lambda: led.status == LedStatus.RETRYING)   # détecté par le battement de cœur
+    n = len(fake.sockets)
+    fake.fail_connects = 0                                 # « Wi-Fi revenu »
+    wait_until(lambda: len(fake.sockets) > n and fake.sockets[-1].logged_in and led.status == LedStatus.CONNECTED)
 
 
 def test_scan_reports_reachable_panel(led, fake):

@@ -50,16 +50,18 @@ class AppConfig:
     # Désactivé : l'affichage externe ne s'ouvre jamais (ni au démarrage, ni via le bouton).
     # Désactivé par défaut : à activer dans la fenêtre dev seulement s'il y a un écran piste.
     external_enabled: bool = False
-    # Panneau LED Wi-Fi (RHX8 64×16 à 8 couleurs, voir apex_ocr/led) : le PC
-    # rejoint le réseau « RHX8-… » du panneau, l'appli s'y reconnecte toute
-    # seule au lancement si led_enabled (hôte « ip » ou « ip:port »).
-    led_enabled: bool = False
+    # Panneau LED Wi-Fi (RHX8 64×16 à 8 couleurs, voir apex_ocr/led) : à chaque
+    # lancement l'appli rejoint elle-même le réseau « RHX8-… » du panneau et s'y
+    # connecte (hôte « ip » ou « ip:port », l'IP du panneau ne change jamais), puis
+    # réessaie tant qu'il est injoignable. led_enabled = false pour s'en passer
+    # (« Déconnecter » dans la fenêtre dev ne vaut que pour la session en cours).
+    led_enabled: bool = True
     led_host: str = DEFAULT_HOST
     led_password: str = DEFAULT_PASSWORD
     led_brightness: int = 12  # 1..16
     led_show_laps: bool = True  # afficher les tours à gauche du temps
     led_resync_minutes: int = 2  # longueur des tranches du décompte (le panneau repart du début au bout de ~4 min) ; bref clignotement à chaque tranche
-    led_wifi_autoconnect: bool = False  # rejoindre le Wi-Fi RHX8-… automatiquement avant de se connecter (netsh, Windows)
+    led_wifi_autoconnect: bool = True  # rejoindre le Wi-Fi RHX8-… automatiquement (netsh, profil créé au besoin) ; false = ne pas toucher au Wi-Fi du PC
     led_width: int = 64
     led_height: int = 16
     led_color: list[int] = field(default_factory=lambda: [0, 255, 0])
