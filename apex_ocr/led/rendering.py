@@ -18,6 +18,8 @@ TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rgb_te
 
 BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = range(8)
 COLOR_NAMES = ["noir", "rouge", "vert", "jaune", "bleu", "magenta", "cyan", "blanc"]
+# Les mêmes 8 couleurs en hexadécimal (boutons de l'UI : montrer la couleur réellement affichée).
+COLOR_HEX = ["#000000", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff"]
 
 
 def color_index(rgb: tuple) -> int:

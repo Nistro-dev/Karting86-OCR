@@ -46,13 +46,15 @@ def panel_content(
     laps_only: bool = False,
     alert_seconds: int = 60,
     alert_laps: int = 5,
+    idle_clock: bool = True,
 ) -> Optional[PanelContent]:
     """Contenu à afficher sur le panneau LED.
 
     En course (RUNNING) : chrono et tours (ou tours seuls si *laps_only*).
-    Sinon : heure courante (HH:MM, renvoyée au panneau à chaque changement de minute)."""
+    Sinon : heure courante (HH:MM, renvoyée au panneau à chaque changement de minute),
+    ou écran noir (``None``) si *idle_clock* est faux."""
     if state != SessionState.RUNNING or not display.is_live:
-        return PanelContent(time_text=time.strftime("%H:%M"), clock=True)
+        return PanelContent(time_text=time.strftime("%H:%M"), clock=True) if idle_clock else None
     laps_text = None
     if display.laps_total is not None:
         digits = max(2, len(str(display.laps_total)))

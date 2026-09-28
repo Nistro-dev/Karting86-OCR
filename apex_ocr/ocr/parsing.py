@@ -20,6 +20,7 @@ _LAPS_RE = re.compile(r"(\d{1,3})\s*/\s*(\d{1,3})")
 _TIME_WITH_COLON_RE = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?")
 _TIME_DIGITS_RE = re.compile(r"(?<!\d)(\d{3,6})(?!\d)")
 _TIME_VALID_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
+MAX_HOURS = 9
 
 
 def clean_raw(text: str) -> str:
@@ -46,8 +47,12 @@ def is_valid_time(text: str) -> bool:
         return False
     # Les minutes et secondes doivent être < 60 : sans ce garde-fou, un simple
     # 0 lu comme 6 par l'OCR (ex: "09:49" -> "69:49") passerait pour valide.
-    minutes_and_seconds = text.split(":")[-2:]
-    return all(int(p) < 60 for p in minutes_and_seconds)
+    parts = text.split(":")
+    if not all(int(p) < 60 for p in parts[-2:]):
+        return False
+    # Idem pour les heures : une session de karting ne dure pas 90 h, « 90:03:47 »
+    # (0 lu 9) est un misread, pas un temps.
+    return len(parts) < 3 or int(parts[0]) <= MAX_HOURS
 
 
 def seconds_from_time(text: str) -> Optional[int]:

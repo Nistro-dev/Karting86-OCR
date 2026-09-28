@@ -89,8 +89,17 @@ py -m PyInstaller --noconfirm --clean --onefile --windowed `
     main.py
 
 # ---- 7. Build installateur ----
-Write-Step 7 $totalSteps "Compilation de l'installateur (Inno Setup)..."
+Write-Step 7 $totalSteps "Installeur Tesseract OCR (embarque) + compilation de l'installateur (Inno Setup)..."
+& powershell -NoProfile -ExecutionPolicy Bypass -File build\fetch_tesseract.ps1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERREUR: installeur Tesseract indisponible, build arrete." -ForegroundColor Red
+    exit 1
+}
 & $isccExe build\installer.iss
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERREUR: Inno Setup a echoue." -ForegroundColor Red
+    exit 1
+}
 
 # Copier l'installateur sur le Bureau avant nettoyage
 $installerSrc = "$workDir\dist_installer\ApexTimingOCR_Setup.exe"
@@ -112,23 +121,38 @@ Set-Location $env:TEMP
 Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "  Dossier de build supprime."
 
-# Desinstaller ce qu'on a installe
-if ($installedPython) {
-    Write-Host "  Desinstallation de Python..." -ForegroundColor Yellow
-    winget uninstall Python.Python.3.12 --accept-source-agreements | Out-Null
-}
-if ($installedInnoSetup) {
-    Write-Host "  Desinstallation de Inno Setup..." -ForegroundColor Yellow
-    winget uninstall JRSoftware.InnoSetup --accept-source-agreements | Out-Null
-}
-if ($installedGit) {
-    Write-Host "  Desinstallation de Git..." -ForegroundColor Yellow
-    winget uninstall Git.Git --accept-source-agreements | Out-Null
+# Desinstaller ce qu'on a installe -- seulement avec l'accord de l'utilisateur
+$installedTools = @()
+if ($installedPython)    { $installedTools += "Python 3.12" }
+if ($installedInnoSetup) { $installedTools += "Inno Setup" }
+if ($installedGit)       { $installedTools += "Git" }
+$removed = $false
+if ($installedTools.Count -gt 0) {
+    Write-Host "  Outils installes par ce script : $($installedTools -join ', ')" -ForegroundColor Yellow
+    $answer = Read-Host "  Les desinstaller maintenant ? (O/N, defaut N)"
+    if ($answer -match '^[OoYy]') {
+        if ($installedPython) {
+            Write-Host "  Desinstallation de Python..." -ForegroundColor Yellow
+            winget uninstall Python.Python.3.12 --accept-source-agreements | Out-Null
+        }
+        if ($installedInnoSetup) {
+            Write-Host "  Desinstallation de Inno Setup..." -ForegroundColor Yellow
+            winget uninstall JRSoftware.InnoSetup --accept-source-agreements | Out-Null
+        }
+        if ($installedGit) {
+            Write-Host "  Desinstallation de Git..." -ForegroundColor Yellow
+            winget uninstall Git.Git --accept-source-agreements | Out-Null
+        }
+        $removed = $true
+    } else {
+        Write-Host "  Outils conserves." -ForegroundColor Yellow
+    }
 }
 
 Write-Host "`n========================================" -ForegroundColor Green
 Write-Host "  Termine !" -ForegroundColor Green
 Write-Host "  Installateur : $installerDst" -ForegroundColor Green
-Write-Host "  Tous les outils temporaires ont ete nettoyes." -ForegroundColor Green
+if ($removed) { Write-Host "  Les outils temporaires ont ete desinstalles." -ForegroundColor Green }
+elseif ($installedTools.Count -gt 0) { Write-Host "  Outils conserves : $($installedTools -join ', ')" -ForegroundColor Green }
 Write-Host "========================================`n" -ForegroundColor Green
 pause

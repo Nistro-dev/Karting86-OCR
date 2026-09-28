@@ -4,13 +4,20 @@ import sys
 if sys.platform == "win32":
     import ctypes
 
+    # Per-monitor v2 : la capture de fenêtre et ses coordonnées restent en pixels réels
+    # même sur un 2e écran à une autre échelle (sinon la zone calibrée se décale).
+    _DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        if not ctypes.windll.user32.SetProcessDpiAwarenessContext(_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2):
+            raise OSError("SetProcessDpiAwarenessContext refusé")
     except Exception:
         try:
-            ctypes.windll.user32.SetProcessDPIAware()
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
-            pass
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
 
 
 def _selftest() -> None:

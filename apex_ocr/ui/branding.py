@@ -1,8 +1,8 @@
-"""Ressources de marque : logos New Kart Poitiers et palette associée.
+"""Ressources de marque : logos New Kart Poitiers, palette associée et libellés
+d'état partagés par toutes les surfaces (fenêtre principale, fenêtre dev, systray).
 
-Trois variantes, chacune avec un usage dédié :
-- ``logo_favicon.png`` : marque seule, fond transparent -> placée sur les
-  fonds existants (bandeau fenêtre, filigrane affichage externe).
+Trois variantes de logo, chacune avec un usage dédié :
+- ``logo_favicon.png`` : marque seule, fond transparent -> bandeau de fenêtre.
 - ``logo_square.png`` : carré arrondi (fond noir intégré) -> icône exe /
   fenêtre / barre des tâches.
 - ``logo_round.png`` : badge rond (fond noir intégré) -> icône systray.
@@ -13,6 +13,9 @@ import os
 from typing import Optional
 
 from PIL import Image
+
+from apex_ocr.health import HealthStatus
+from apex_ocr.led.panel import LedStatus
 
 _UI_DIR = os.path.dirname(os.path.abspath(__file__))
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(_UI_DIR)), "assets")
@@ -26,6 +29,30 @@ PRIMARY_RED = "#ED1B24"
 PRIMARY_RED_HOVER = "#951019"
 ACCENT_GREY = "#787878"
 BG_BLACK = "#111111"
+STATUS_GREY = "#8a8a8a"
+STATUS_GREEN = "#00c94a"
+STATUS_AMBER = "#e0a000"
+
+# Libellé + couleur de chaque état, une seule source pour toutes les fenêtres.
+HEALTH_LABELS: dict[HealthStatus, tuple[str, str]] = {
+    HealthStatus.IDLE: ("En attente", STATUS_GREY),
+    HealthStatus.ACTIVE: ("Course suivie", STATUS_GREEN),
+    HealthStatus.ERROR: ("Problème", PRIMARY_RED),
+}
+# Teinte RGB des icônes (fenêtre, barre des tâches, systray) selon l'état.
+HEALTH_TINTS: dict[HealthStatus, tuple[int, int, int]] = {
+    HealthStatus.IDLE: (140, 140, 140),
+    HealthStatus.ACTIVE: (0, 201, 74),
+    HealthStatus.ERROR: (237, 27, 36),
+}
+LED_LABELS: dict[LedStatus, tuple[str, str]] = {
+    LedStatus.DISABLED: ("Non connecté", STATUS_GREY),
+    LedStatus.CONNECTING: ("Connexion...", STATUS_AMBER),
+    LedStatus.CONNECTED: ("Connecté", STATUS_GREEN),
+    LedStatus.RETRYING: ("Reconnexion...", PRIMARY_RED),
+}
+
+TESSERACT_DOWNLOAD_URL = "https://github.com/UB-Mannheim/tesseract/releases"
 
 
 def _load(path: str) -> Optional[Image.Image]:

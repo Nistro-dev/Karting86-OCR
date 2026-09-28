@@ -1,9 +1,10 @@
-"""Fenêtre principale (prod) : logo, statut, gros timer. Minimaliste par
-design — la configuration/calibration/journal vivent dans la fenêtre "dev"
-(``DevWindow``), ouverte via Ctrl+Maj+D."""
+"""Fenêtre principale (prod) : logo, statut (avec le détail d'un problème), état du
+panneau LED, gros timer. Minimaliste par design — la configuration/calibration/
+journal vivent dans la fenêtre "dev" (``DevWindow``), ouverte via Ctrl+Maj+D."""
 from __future__ import annotations
 
 import tkinter as tk
+import webbrowser
 from dataclasses import dataclass
 from typing import Callable
 
@@ -13,20 +14,9 @@ from PIL import ImageTk
 from apex_ocr import __version__
 from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthStatus
+from apex_ocr.led.panel import LedStatus
 from apex_ocr.session import DisplayValue
 from apex_ocr.ui import branding
-
-_HEALTH_LABELS = {
-    HealthStatus.IDLE: ("En attente", "#8a8a8a"),
-    HealthStatus.ACTIVE: ("Course suivie", "#00c94a"),
-    HealthStatus.ERROR: ("Problème", branding.PRIMARY_RED),
-}
-
-_ICON_TINTS = {
-    HealthStatus.IDLE: (140, 140, 140),
-    HealthStatus.ACTIVE: (0, 201, 74),
-    HealthStatus.ERROR: (237, 27, 36),
-}
 
 DEV_WINDOW_SHORTCUT = "<Control-Shift-KeyPress-D>"
 
@@ -48,8 +38,8 @@ class MainWindow(ctk.CTk):
 
         self._cb = callbacks
         self.title(f"Apex Timing OCR — v{__version__}")
-        self.geometry("460x420")
-        self.minsize(380, 360)
+        self.geometry("480x460")
+        self.minsize(400, 380)
         self.protocol("WM_DELETE_WINDOW", self._cb.on_close)
         self.bind(DEV_WINDOW_SHORTCUT, lambda e: self._cb.on_toggle_dev())
 
@@ -64,7 +54,7 @@ class MainWindow(ctk.CTk):
         """Icône de la fenêtre/barre des tâches, teintée selon le statut
         (même logique visuelle que l'icône systray)."""
         try:
-            img = branding.build_status_icon(64, _ICON_TINTS[status])
+            img = branding.build_status_icon(64, branding.HEALTH_TINTS[status])
             self._icon_photo = ImageTk.PhotoImage(img)
             self.wm_iconphoto(True, self._icon_photo)
         except Exception:
@@ -75,13 +65,35 @@ class MainWindow(ctk.CTk):
     def _build_layout(self) -> None:
         self._build_header()
 
+        # Bannière (masquée par défaut) : Tesseract introuvable -> l'appli ne peut rien lire.
+        self.banner = ctk.CTkFrame(self, fg_color=branding.PRIMARY_RED, corner_radius=6)
+        self.banner_lbl = ctk.CTkLabel(self.banner, text="", text_color="#ffffff", wraplength=330,
+                                       justify="left", anchor="w")
+        self.banner_lbl.pack(side="left", fill="x", expand=True, padx=(10, 6), pady=8)
+        self.banner_btn = ctk.CTkButton(self.banner, text="Télécharger", width=100, fg_color="#ffffff",
+                                        text_color=branding.PRIMARY_RED, hover_color="#e6e6e6")
+        self.banner_btn.pack(side="right", padx=(0, 10), pady=8)
+
         status_row = ctk.CTkFrame(self, fg_color="transparent")
-        status_row.pack(fill="x", padx=16, pady=(4, 0))
+        status_row.pack(fill="x", padx=16, pady=(6, 0))
         self.status_dot = tk.Canvas(status_row, width=14, height=14, highlightthickness=0)
         self.status_dot.pack(side="left")
-        self._status_dot_id = self.status_dot.create_oval(2, 2, 12, 12, fill="#8a8a8a", outline="")
+        self._status_dot_id = self.status_dot.create_oval(2, 2, 12, 12, fill=branding.STATUS_GREY, outline="")
         self.status_lbl = ctk.CTkLabel(status_row, text="En attente")
         self.status_lbl.pack(side="left", padx=6)
+        # Détail lisible du problème courant (« Fenêtre "…" introuvable », ...).
+        self.status_detail_lbl = ctk.CTkLabel(self, text="", text_color=branding.PRIMARY_RED,
+                                              wraplength=440, justify="left", anchor="w")
+        self.status_detail_lbl.pack(fill="x", padx=16)
+
+        led_row = ctk.CTkFrame(self, fg_color="transparent")
+        led_row.pack(fill="x", padx=16, pady=(2, 0))
+        ctk.CTkLabel(led_row, text="Panneau LED :").pack(side="left")
+        self.led_dot = tk.Canvas(led_row, width=14, height=14, highlightthickness=0)
+        self.led_dot.pack(side="left", padx=(6, 0))
+        self._led_dot_id = self.led_dot.create_oval(2, 2, 12, 12, fill=branding.STATUS_GREY, outline="")
+        self.led_lbl = ctk.CTkLabel(led_row, text="Non connecté")
+        self.led_lbl.pack(side="left", padx=6)
 
         timer_frame = ctk.CTkFrame(self)
         timer_frame.pack(fill="both", expand=True, padx=16, pady=12)
@@ -113,8 +125,34 @@ class MainWindow(ctk.CTk):
         self.time_lbl.configure(text=value.time_text)
         self.laps_lbl.configure(text=f"{value.laps_done} / {value.laps_total}" if value.laps_total is not None else "")
 
-    def set_health(self, status: HealthStatus) -> None:
-        label, color = _HEALTH_LABELS[status]
+    def set_health(self, status: HealthStatus, detail: str = "") -> None:
+        label, color = branding.HEALTH_LABELS[status]
         self.status_dot.itemconfig(self._status_dot_id, fill=color)
         self.status_lbl.configure(text=label)
+        self.status_detail_lbl.configure(text=detail)
         self.set_taskbar_icon(status)
+
+    def set_led_status(self, status: LedStatus, detail: str = "") -> None:
+        label, color = branding.LED_LABELS[status]
+        if detail and status == LedStatus.RETRYING:
+            label = f"{label} — {detail}"
+        self.led_dot.itemconfig(self._led_dot_id, fill=color)
+        self.led_lbl.configure(text=label)
+
+    def show_banner(self, message: str, url: str = "") -> None:
+        """Bandeau rouge en haut de la fenêtre (Tesseract introuvable...), avec un bouton
+        qui ouvre ``url`` dans le navigateur."""
+        self.banner_lbl.configure(text=message)
+        if url:
+            self.banner_btn.configure(command=lambda: webbrowser.open(url))
+            self.banner_btn.pack(side="right", padx=(0, 10), pady=8)
+        else:
+            self.banner_btn.pack_forget()
+        self.banner.pack(fill="x", padx=16, pady=(10, 0), after=self._first_child())
+
+    def hide_banner(self) -> None:
+        self.banner.pack_forget()
+
+    def _first_child(self):
+        children = self.winfo_children()
+        return children[0] if children else None

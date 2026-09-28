@@ -59,6 +59,14 @@ def test_content_drops_zero_hours():
     assert trim_zero_hours("09:58") == "09:58"
 
 
+def test_content_idle_without_clock_is_blank():
+    live = DisplayValue("09:58", None, None, is_live=True)
+    assert panel_content(SessionState.WAITING, live, idle_clock=False) is None
+    assert panel_content(SessionState.WAITING, live, idle_clock=True).clock
+    # en course, le réglage n'a pas d'effet
+    assert panel_content(SessionState.RUNNING, live, idle_clock=False).time_text == "09:58"
+
+
 def test_content_laps_only_is_static_text():
     value = DisplayValue("09:58", 3, 20, is_live=True)
     assert panel_content(SessionState.RUNNING, value, laps_only=True) == PanelContent("03/20")
@@ -597,6 +605,47 @@ def test_heartbeat_detects_dead_link_without_new_content(led, fake, monkeypatch)
     n = len(fake.sockets)
     fake.fail_connects = 0                                 # « Wi-Fi revenu »
     wait_until(lambda: len(fake.sockets) > n and fake.sockets[-1].logged_in and led.status == LedStatus.CONNECTED)
+
+
+def test_set_show_laps_resends_current_content(led, fake):
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
+    led.show(PanelContent("00:05", "03/20"))
+    wait_until(lambda: len(fake.uploads) == 2)
+    assert fake.last_frames == frames_for("00:05", "03/20")
+    led.set_show_laps(False)                                   # temps seul : renvoi immédiat
+    wait_until(lambda: len(fake.uploads) == 3)
+    assert fake.last_frames == frames_for("00:05")
+    led.set_show_laps(True)
+    wait_until(lambda: len(fake.uploads) == 4)
+    assert fake.last_frames == frames_for("00:05", "03/20")
+
+
+def test_set_password_reconnects_with_new_password(led, fake):
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
+    fake.password = "NOUVEAU"                                  # le panneau change de mot de passe
+    led.set_password("NOUVEAU")                                # l'appli aussi -> reconnexion immédiate
+    wait_until(lambda: len(fake.sockets) == 2 and fake.sockets[-1].logged_in and led.status == LedStatus.CONNECTED)
+    assert fake.sockets[0].closed
+
+
+def test_set_password_while_disconnected_applies_at_next_connect(led, fake):
+    fake.password = "AUTRE"
+    led.set_password("AUTRE")
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED)
+    assert len(fake.sockets) == 1
+
+
+def test_set_chunk_minutes_changes_next_chunk(led, fake, monkeypatch):
+    monkeypatch.setattr(panel_mod, "CHUNK_EXTRA_S", 0)
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
+    led.set_chunk_minutes(1)
+    led.show(PanelContent("05:00"))
+    wait_until(lambda: len(fake.uploads) == 2)
+    assert len(fake.last_frames) == 61                         # 1 min de trames (+ trame de départ)
 
 
 def test_scan_reports_reachable_panel(led, fake):
