@@ -1,5 +1,5 @@
 #define MyAppName "Apex Timing OCR"
-#define MyAppVersion "2.5.2"
+#define MyAppVersion "2.5.3"
 #define MyAppExeName "ApexTimingOCR.exe"
 #define MyAppPublisher "CodeForgeStudio"
 #define MyAppPublisherURL "https://codeforgestudio.fr"
