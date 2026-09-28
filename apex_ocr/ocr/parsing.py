@@ -199,4 +199,11 @@ def parse_lenient(raw_text: str) -> LenientReading:
         laps_done = laps1[0] if laps1 else None
         laps_total = laps1[1] if laps1 else None
 
+    # Les tours n'apparaissent jamais seuls : sur l'écran de chrono ils accompagnent
+    # toujours le temps. Sans temps valide, un "NN/NN" est un artefact — typiquement le
+    # ':' du temps lu comme '/' par l'OCR (ex: "03:27" -> "03:2/7" -> faux "2/7 tours").
+    # On ne retient donc jamais de tours sans temps.
+    if time_text is None:
+        return LenientReading(time_text=None, laps_done=None, laps_total=None)
+
     return LenientReading(time_text=time_text, laps_done=laps_done, laps_total=laps_total)

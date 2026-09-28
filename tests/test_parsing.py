@@ -88,10 +88,16 @@ def test_parse_lenient_full_reading():
     assert r == LenientReading(time_text="07:32", laps_done=5, laps_total=20)
 
 
-def test_parse_lenient_time_unreadable_keeps_laps():
-    r = parse_lenient("5/20")
-    assert r.laps_done == 5 and r.laps_total == 20
-    assert r.time_text is None
+def test_parse_lenient_laps_without_time_are_ignored():
+    # Les tours n'apparaissent jamais sans temps : un "NN/NN" seul est un artefact
+    # (souvent le ':' du temps lu comme '/'), on ne le retient pas comme des tours.
+    assert parse_lenient("5/20") == LenientReading(None, None, None)
+
+
+def test_parse_lenient_slash_in_time_is_not_false_laps():
+    # "03:27" mal lu "03:2/7" (ou "02:2/7") ne doit pas devenir un faux "2/7 tours".
+    assert parse_lenient("03:2/7") == LenientReading(None, None, None)
+    assert parse_lenient("02:2/7") == LenientReading(None, None, None)
 
 
 def test_parse_lenient_laps_unreadable_keeps_time():
