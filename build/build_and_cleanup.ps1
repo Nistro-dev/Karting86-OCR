@@ -80,9 +80,9 @@ py -m PyInstaller --noconfirm --clean --onefile --windowed `
     --name "ApexTimingOCR" `
     --icon "assets\icon.ico" `
     --collect-all customtkinter `
-    --collect-all bleak `
-    --collect-submodules winrt `
     --add-data "apex_ocr\ui\theme_newkart.json;apex_ocr\ui" `
+    --add-data "apex_ocr\led\rgb_template.bin;apex_ocr\led" `
+    --add-data "test_timer.html;." `
     --add-data "assets\logo_favicon.png;assets" `
     --add-data "assets\logo_square.png;assets" `
     --add-data "assets\logo_round.png;assets" `

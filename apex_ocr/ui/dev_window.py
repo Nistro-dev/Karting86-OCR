@@ -44,6 +44,7 @@ class DevWindowCallbacks:
     on_start: Callable[[], None]
     on_stop: Callable[[], None]
     on_open_external: Callable[[], None]
+    on_open_test_page: Callable[[], None]
     on_external_enabled: Callable[[bool], None]
     on_config_changed: Callable[[], None]
     on_auto_calibrate: Callable[[], None]
@@ -168,6 +169,7 @@ class DevWindow(ctk.CTkToplevel):
         ).pack(side="left", padx=(2, 4))
         self.set_external_enabled(config.external_enabled)
         ctk.CTkButton(btn_row, text="Test OCR", command=self._cb.on_test_ocr).pack(side="right", padx=4)
+        ctk.CTkButton(btn_row, text="Page de test", command=self._cb.on_open_test_page).pack(side="right", padx=4)
 
         diag_frame = ctk.CTkFrame(self)
         diag_frame.pack(fill="x", padx=14, pady=(0, 8))

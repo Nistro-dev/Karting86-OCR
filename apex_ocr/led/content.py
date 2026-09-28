@@ -31,6 +31,15 @@ def _is_alert(display: DisplayValue, alert_seconds: int, alert_laps: int) -> boo
     return False
 
 
+def trim_zero_hours(time_text: str) -> str:
+    """"00:10:00" -> "10:00" : des heures à zéro n'apportent rien sur le panneau et prennent
+    la place des gros chiffres. "1:09:58" reste tel quel."""
+    parts = time_text.split(":")
+    if len(parts) == 3 and parts[0].isdigit() and int(parts[0]) == 0:
+        return ":".join(parts[1:])
+    return time_text
+
+
 def panel_content(
     state: SessionState,
     display: DisplayValue,
@@ -51,4 +60,4 @@ def panel_content(
     alert = _is_alert(display, alert_seconds, alert_laps)
     if laps_only and laps_text is not None:
         return PanelContent(time_text=laps_text, alert=alert)
-    return PanelContent(display.time_text, laps_text, alert=alert, alert_below=alert_seconds)
+    return PanelContent(trim_zero_hours(display.time_text), laps_text, alert=alert, alert_below=alert_seconds)

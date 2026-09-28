@@ -1,5 +1,5 @@
 #define MyAppName "Apex Timing OCR"
-#define MyAppVersion "2.3.1"
+#define MyAppVersion "2.5.0"
 #define MyAppExeName "ApexTimingOCR.exe"
 #define MyAppPublisher "CodeForgeStudio"
 #define MyAppPublisherURL "https://codeforgestudio.fr"
@@ -34,9 +34,11 @@ Name: "startup"; Description: "Lancer Apex Timing OCR au démarrage de Windows (
 
 [Files]
 Source: "..\dist\ApexTimingOCR.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\test_timer.html"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\Page de test du chrono"; Filename: "{app}\test_timer.html"
 Name: "{group}\Désinstaller {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--minimized"; Tasks: startup

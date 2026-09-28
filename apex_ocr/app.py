@@ -10,9 +10,12 @@ test OCR/affichage externe, masquée par défaut, ouverte via Ctrl+Maj+D).
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
+import webbrowser
+from pathlib import Path
 from tkinter import TclError, filedialog, messagebox
 from typing import Optional
 
@@ -31,7 +34,7 @@ from apex_ocr.ocr import engine
 from apex_ocr.ocr.calibration import calibrate_threshold
 from apex_ocr.ocr.parsing import parse_lenient, parse_strict
 from apex_ocr.ocr.preprocess import preprocess
-from apex_ocr.paths import OUTPUT_PATH
+from apex_ocr.paths import OUTPUT_PATH, test_page_path
 from apex_ocr.session import DisplayValue, SessionEvent, SessionState, SessionTracker, StopReason, current_display
 from apex_ocr.ui.dev_window import DevWindow, DevWindowCallbacks
 from apex_ocr.ui.external_display import ExternalDisplay
@@ -102,6 +105,7 @@ class App:
             on_start=self.start,
             on_stop=self.stop,
             on_open_external=self._open_external,
+            on_open_test_page=self._open_test_page,
             on_external_enabled=self._set_external_enabled,
             on_config_changed=self._persist_config_from_ui,
             on_auto_calibrate=self._auto_calibrate_threshold,
@@ -522,6 +526,17 @@ class App:
         if elapsed < 3600:
             return f"{elapsed // 60}min {elapsed % 60}s{suffix}"
         return f"{elapsed // 3600}h {(elapsed % 3600) // 60}min{suffix}"
+
+    # ---- page de test ----------------------------------------------------
+
+    def _open_test_page(self) -> None:
+        """Ouvre test_timer.html (livrée avec l'appli) dans le navigateur par défaut."""
+        path = test_page_path()
+        if not path or not os.path.exists(path):
+            self.dev_window.log("Page de test introuvable (test_timer.html).")
+            return
+        webbrowser.open(Path(path).as_uri())
+        self.dev_window.log(f"Page de test ouverte dans le navigateur : {path}")
 
     # ---- affichage externe ---------------------------------------------
 
