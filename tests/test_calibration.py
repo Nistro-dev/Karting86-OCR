@@ -1,4 +1,30 @@
-from apex_ocr.ocr.calibration import aggregate_sample_validity, find_most_robust_threshold
+import threading
+
+from PIL import Image
+
+from apex_ocr.ocr import calibration
+from apex_ocr.ocr.calibration import (aggregate_sample_validity, calibrate_threshold, concordant_thresholds,
+                                      find_most_robust_threshold)
+
+
+def test_concordance_rejects_thresholds_that_read_different_times_per_sample():
+    per_sample = [{90: 589, 100: 589, 110: 409}, {90: 588, 100: 588, 110: 588}, {90: 588, 100: 587, 110: 588}]
+    # 110 lit "06:49" sur un échantillon et "09:48" sur les autres : non concordant
+    assert concordant_thresholds(per_sample, [90, 100, 110, 120]) == {90, 100}
+
+
+def test_calibrate_reports_progress_and_can_be_cancelled(monkeypatch):
+    monkeypatch.setattr(calibration, "preprocess", lambda img, t: img)
+    monkeypatch.setattr(calibration.engine, "extract_text", lambda img: "09:48")
+    images = [Image.new("RGB", (10, 10))] * 2
+    progress = []
+    best = calibrate_threshold(images, threshold_range=range(100, 121, 10),
+                               on_progress=lambda i, n: progress.append((i, n)))
+    assert best == 110 and progress[-1] == (6, 6)
+
+    cancel = threading.Event()
+    cancel.set()
+    assert calibrate_threshold(images, threshold_range=range(100, 121, 10), cancel=cancel) is None
 
 
 def test_picks_center_of_longest_contiguous_valid_run():

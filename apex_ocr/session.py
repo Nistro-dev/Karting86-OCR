@@ -12,6 +12,11 @@ waiting -> armed -> running -> (stop) -> waiting
   Une remontée du temps au-delà de la tolérance, confirmée sur
   ``REQUIRED_CONFIRMATIONS`` lectures de suite, est traitée comme une
   annulation (cf. ``StopReason.CANCELLED``) plutôt qu'une resynchro.
+  Un grand écart (``LARGE_DRIFT_THRESHOLD``) exige plus de confirmations,
+  étalées dans le temps, et pour une resynchro une valeur qui DÉCROÎT comme
+  un vrai chrono : un misread figé répété N fois n'est jamais confirmé. Un
+  changement de format (mm:ss <-> h:mm:ss) en cours de course est lui aussi
+  confirmé avant d'être adopté.
 - L'arrêt est déclenché uniquement par le TEMPS : zéro atteint, annulation
   (retour au temps de base), ou perte de lecture OCR prolongée (filet de
   sécurité, basé sur une vraie durée sans lecture valide plutôt qu'un
@@ -114,6 +119,11 @@ class SessionTracker:
         self._cancel_candidate: Optional[float] = None
         self._resync_streak = 0
         self._resync_candidate: Optional[float] = None
+        self._resync_first_seconds: Optional[int] = None
+        self._resync_first_wall: Optional[float] = None
+        self._cancel_first_wall: Optional[float] = None
+        self._format_candidate: Optional[bool] = None
+        self._format_streak = 0
         self._laps_jump_candidate: Optional[int] = None
         self._laps_jump_streak = 0
         self._session_start_wall: Optional[float] = None
@@ -131,8 +141,13 @@ class SessionTracker:
         self._decrease_streak = 0
         self._cancel_streak = 0
         self._cancel_candidate = None
+        self._cancel_first_wall = None
         self._resync_streak = 0
         self._resync_candidate = None
+        self._resync_first_seconds = None
+        self._resync_first_wall = None
+        self._format_candidate = None
+        self._format_streak = 0
         self._laps_jump_candidate = None
         self._laps_jump_streak = 0
         self._session_start_wall = None
@@ -195,8 +210,46 @@ class SessionTracker:
         self._last_good_time_wall = now
         self._cancel_streak = 0
         self._cancel_candidate = None
+        self._cancel_first_wall = None
         self._resync_streak = 0
         self._resync_candidate = None
+        self._resync_first_seconds = None
+        self._resync_first_wall = None
+        self._format_candidate = None
+        self._format_streak = 0
+
+    def _format_change_confirmed(self, time_text: str) -> bool:
+        """Changement de format (mm:ss <-> h:mm:ss) en cours de course : le plus souvent un
+        misread (chiffre parasite, ':' manqué -> heures qui « apparaissent »). On n'adopte le
+        nouveau format qu'après ``required_confirmations`` lectures consécutives ; en
+        attendant, la lecture est ignorée. Vrai si la lecture peut être traitée."""
+        with_hours = time_text.count(":") == 2
+        if with_hours == self._with_hours:
+            self._format_candidate = None
+            self._format_streak = 0
+            return True
+        if self._format_candidate == with_hours:
+            self._format_streak += 1
+        else:
+            self._format_candidate = with_hours
+            self._format_streak = 1
+        if self._format_streak < self.required_confirmations:
+            self._log.debug("Format ignoré (misread probable) : OCR=%s, streak=%d/%d",
+                            time_text, self._format_streak, self.required_confirmations)
+            return False
+        self._log.info("Changement de format confirmé : %s", time_text)
+        self._format_candidate = None
+        self._format_streak = 0
+        return True
+
+    def _tracks_live_countdown(self, seconds: int, now: float, needed: int) -> bool:
+        """Pour un grand écart, la valeur candidate doit se comporter comme un vrai chrono :
+        suivie pendant au moins ``needed - 1`` s et ayant DÉCRU d'au moins 1 s depuis la
+        première lecture. Une valeur figée répétée N fois (misread stable, bruit) n'est
+        jamais confirmée."""
+        if needed <= self.required_confirmations:
+            return True
+        return (now - self._resync_first_wall >= needed - 1) and (seconds <= self._resync_first_seconds - 1)
 
     def _confirmations_needed(self, drift_abs: float) -> int:
         """Plus le drift est grand, plus on exige de confirmations : un saut de
@@ -255,6 +308,8 @@ class SessionTracker:
                         self._laps_total = reading.laps_total
 
         if reading.time_text is not None:
+            if not self._format_change_confirmed(reading.time_text):
+                return events
             self._last_good_time_wall = now
             self._apply_time_format(reading.time_text)
             seconds = seconds_from_time(reading.time_text)
@@ -269,31 +324,43 @@ class SessionTracker:
                         self._cancel_streak += 1
                     else:
                         self._cancel_streak = 1
+                        self._cancel_first_wall = now
                     self._cancel_candidate = seconds
                     self._log.warning(
                         "Cancel candidat : OCR=%s, horloge=%s, drift=+%.0fs, streak=%d/%d",
                         reading.time_text, time_from_seconds(remaining, self._with_hours),
                         drift, self._cancel_streak, needed,
                     )
-                    if self._cancel_streak >= needed:
+                    # Un grand écart doit en plus persister dans le temps (pas N lectures
+                    # d'une même frame bruitée en moins d'une seconde) : une annulation
+                    # affiche une valeur figée, seule la durée d'observation compte ici.
+                    persisted = needed <= self.required_confirmations or now - self._cancel_first_wall >= needed - 1
+                    if self._cancel_streak >= needed and persisted:
                         self._log.warning("Cancel confirmé après %d lectures", self._cancel_streak)
                         events.append(self._stop(StopReason.CANCELLED, now, override_seconds=seconds))
                         return events
                 else:
                     self._cancel_streak = 0
                     self._cancel_candidate = None
+                    self._cancel_first_wall = None
                     if drift < -self.resync_tolerance_seconds:
-                        if self._resync_candidate is not None and abs(seconds - self._resync_candidate) <= self.resync_tolerance_seconds:
+                        # Continuité du candidat : le temps attendu suit l'horloge murale depuis
+                        # la 1re lecture candidate (un vrai chrono décroît, il ne reste pas figé).
+                        if self._resync_candidate is not None and abs(
+                            seconds - (self._resync_first_seconds - (now - self._resync_first_wall))
+                        ) <= self.resync_tolerance_seconds:
                             self._resync_streak += 1
                         else:
                             self._resync_streak = 1
+                            self._resync_first_seconds = seconds
+                            self._resync_first_wall = now
                         self._resync_candidate = seconds
                         self._log.warning(
                             "Resync candidat : OCR=%s, horloge=%s, drift=%.0fs, streak=%d/%d",
                             reading.time_text, time_from_seconds(remaining, self._with_hours),
                             drift, self._resync_streak, needed,
                         )
-                        if self._resync_streak >= needed:
+                        if self._resync_streak >= needed and self._tracks_live_countdown(seconds, now, needed):
                             self._log.info(
                                 "Resync confirmé : %s -> %s (après %d lectures)",
                                 time_from_seconds(remaining, self._with_hours),
@@ -303,10 +370,14 @@ class SessionTracker:
                             self._session_start_seconds = seconds
                             self._resync_streak = 0
                             self._resync_candidate = None
+                            self._resync_first_seconds = None
+                            self._resync_first_wall = None
                             events.append(SessionEvent.RESYNCED)
                     else:
                         self._resync_streak = 0
                         self._resync_candidate = None
+                        self._resync_first_seconds = None
+                        self._resync_first_wall = None
         elif (
             self._last_good_time_wall is not None
             and now - self._last_good_time_wall >= self.ocr_lost_timeout_seconds

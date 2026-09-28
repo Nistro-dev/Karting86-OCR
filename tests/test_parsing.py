@@ -60,6 +60,14 @@ def test_parse_strict_rejects_out_of_range_minutes_or_seconds():
     assert parse_strict("01:69:33") is None
 
 
+def test_parse_strict_rejects_absurd_hours():
+    # "00:03:47" lu "90:03:47" (0 -> 9) : une session ne dure pas 90 h.
+    assert parse_strict("90:03:47") is None
+    assert parse_strict("10:03:47") is None
+    assert parse_strict("9:03:47").time_text == "9:03:47"
+    assert parse_strict("01:03:47").time_text == "01:03:47"
+
+
 def test_parse_strict_rejects_leftover_noise():
     # un token numérique en trop après le temps -> lecture rejetée (armement strict)
     assert parse_strict("5/20 07:32 99") is None

@@ -41,6 +41,8 @@ CLOCK_GRACE_S = 6.0            # pendant un décompte, un passage transitoire à
 DEFAULT_CHUNK_MIN = 2          # le panneau repart du début après ~4 min : décompte envoyé par tranches
 CHUNK_EXTRA_S = 10             # trames de réserve au-delà de la tranche, le temps d'envoyer la suivante
 UPLOAD_RATE_DEFAULT = 120_000  # octets/s (mesuré : 349 Ko en 2,9 s), affiné à chaque envoi
+ZOMBIE_TIMEOUTS = 2            # timeouts de connexion consécutifs avant d'annoncer la cause probable
+ZOMBIE_DETAIL = "panneau occupé par l'ancienne connexion (≈3 min) — ou redémarrer le panneau"
 UPLOAD_OVERHEAD_S = 0.3
 
 _UNSENT = object()
@@ -106,6 +108,8 @@ class LedPanel:
         self._sent: object = _UNSENT          # contenu (ou None) matérialisé par le programme envoyé
         self._seq: Optional[_Sequence] = None
         self._clock_since: Optional[float] = None   # depuis quand l'horloge est demandée (anti-flash)
+        self._timeouts = 0                    # timeouts de connexion consécutifs (détection « zombie »)
+        self._reconnect = False               # demandé par set_password() : refermer et rouvrir le lien
         self._last_io = 0.0                   # dernier échange réussi (pour cadencer le battement de cœur)
         self._upload_rate = float(UPLOAD_RATE_DEFAULT)
         self._last_requested: object = _UNSENT
@@ -156,6 +160,28 @@ class LedPanel:
             self._wake = True
             self._lock.notify()
 
+    def set_show_laps(self, show_laps: bool) -> None:
+        """Tours à côté du temps ou non ; le contenu courant est renvoyé."""
+        with self._lock:
+            self._show_laps = bool(show_laps)
+            self._sent = _UNSENT
+            self._wake = True
+            self._lock.notify()
+
+    def set_chunk_minutes(self, minutes: int) -> None:
+        """Longueur des tranches du décompte ; effet à partir de la prochaine tranche."""
+        with self._lock:
+            self._chunk_s = max(1, min(60, int(minutes or DEFAULT_CHUNK_MIN))) * 60
+
+    def set_password(self, password: str) -> None:
+        """Nouveau mot de passe : appliqué à la prochaine connexion ; si le panneau est
+        déjà relié, la connexion est refaite tout de suite avec le nouveau."""
+        with self._lock:
+            self._password = password
+            self._reconnect = self._sock is not None
+            self._wake = True
+            self._lock.notify()
+
     def set_brightness(self, level: int) -> None:
         with self._lock:
             self._brightness = max(1, min(16, int(level)))
@@ -185,6 +211,18 @@ class LedPanel:
                 setattr(self, "_" + k, v)
             self._wake = True
             self._lock.notify()
+
+    def _connect_failure_detail(self, exc: Exception) -> str:
+        """Après plusieurs timeouts de connexion d'affilée, la cause la plus probable est
+        connue (limite matérielle) : la carte garde l'ancienne connexion TCP après une
+        coupure brutale et refuse la nouvelle pendant ~3 min. Autant le dire."""
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            self._timeouts += 1
+            if self._timeouts >= ZOMBIE_TIMEOUTS:
+                return ZOMBIE_DETAIL
+        else:
+            self._timeouts = 0
+        return str(exc) or type(exc).__name__
 
     def _set_status(self, status: LedStatus, detail: str = "") -> None:
         if status != self.status:
@@ -217,6 +255,9 @@ class LedPanel:
                     self._set_status(LedStatus.DISABLED)
                     self._wait_wake()
                     continue
+                if self._reconnect:
+                    self._reconnect = False
+                    self._close()
                 if self._sock is None:
                     self._set_status(LedStatus.CONNECTING if backoff == RETRY_MIN_S else LedStatus.RETRYING,
                                      self.status_detail)
@@ -224,11 +265,12 @@ class LedPanel:
                         self._open(host)
                     except Exception as exc:
                         self._close()
-                        self._set_status(LedStatus.RETRYING, str(exc) or type(exc).__name__)
+                        self._set_status(LedStatus.RETRYING, self._connect_failure_detail(exc))
                         self._wait_wake(backoff)
                         backoff = min(backoff * 2, RETRY_MAX_S)
                         continue
                     backoff = RETRY_MIN_S
+                    self._timeouts = 0
                     self._set_status(LedStatus.CONNECTED)
 
                 if self._brightness_dirty:

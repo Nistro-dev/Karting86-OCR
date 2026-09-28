@@ -148,9 +148,70 @@ def test_format_switches_dynamically_based_on_latest_reading():
     t.on_strict_reading(strict("00:01:28"), now=2.0)
     assert t.live_display(now=2.0).time_text.count(":") == 2  # hh:mm:ss
 
-    # la source repasse en mm:ss (plus d'heure affichée) : le format suit
+    # la source repasse en mm:ss (plus d'heure affichée) : le format suit, mais
+    # seulement après confirmation (2 lectures) — une seule lecture dans un autre
+    # format est le plus souvent un misread (chiffre parasite, ':' manqué).
     t.on_lenient_reading(lenient(time_text="00:26"), now=62.0)
-    assert t.live_display(now=62.0).time_text.count(":") == 1  # mm:ss
+    assert t.live_display(now=62.0).time_text.count(":") == 2  # pas encore adopté
+    t.on_lenient_reading(lenient(time_text="00:26"), now=62.3)
+    assert t.live_display(now=62.3).time_text.count(":") == 1  # mm:ss
+
+
+def test_single_reading_with_phantom_hours_is_ignored():
+    # "03:47" lu "1:03:47" une seule fois : ignoré, l'horloge interne continue en mm:ss
+    t = SessionTracker(resync_tolerance_seconds=3)
+    t.on_strict_reading(strict("03:49"), now=0.0)
+    t.on_strict_reading(strict("03:48"), now=1.0)
+    t.on_strict_reading(strict("03:47"), now=2.0)
+    assert t.on_lenient_reading(lenient(time_text="1:03:46"), now=3.0) == []
+    assert t.state == SessionState.RUNNING
+    assert t.live_display(now=3.0).time_text == "03:46"
+    # lecture normale ensuite : le candidat de format est oublié
+    t.on_lenient_reading(lenient(time_text="03:45"), now=4.0)
+    t.on_lenient_reading(lenient(time_text="1:03:44"), now=5.0)
+    assert t.live_display(now=5.0).time_text == "03:44"
+
+
+def test_frozen_misread_never_confirms_a_large_resync():
+    # L'OCR lit 5 fois de suite la même valeur aberrante "03:56" (au lieu de 07:5x) :
+    # une vraie valeur de chrono aurait décru, celle-ci est figée -> pas de resync.
+    t = SessionTracker(resync_tolerance_seconds=3)
+    t.on_strict_reading(strict("08:00"), now=0.0)
+    t.on_strict_reading(strict("07:59"), now=1.0)
+    t.on_strict_reading(strict("07:58"), now=2.0)
+    for i in range(8):
+        events = t.on_lenient_reading(lenient(time_text="03:56"), now=3.0 + i * 0.2)
+        assert SessionEvent.RESYNCED not in events
+    assert t.live_display(now=5.0).time_text.startswith("07:")
+
+
+def test_real_large_jump_is_confirmed_when_value_keeps_counting_down():
+    # Le chrono source a vraiment sauté à 03:56 et continue de descendre : confirmé
+    # après 5 lectures étalées sur >= 4 s.
+    t = SessionTracker(resync_tolerance_seconds=3)
+    t.on_strict_reading(strict("08:00"), now=0.0)
+    t.on_strict_reading(strict("07:59"), now=1.0)
+    t.on_strict_reading(strict("07:58"), now=2.0)
+    confirmed = False
+    for i, text in enumerate(["03:56", "03:55", "03:54", "03:53", "03:52", "03:51"]):
+        if SessionEvent.RESYNCED in t.on_lenient_reading(lenient(time_text=text), now=3.0 + i):
+            confirmed = True
+            break
+    assert confirmed and t.live_display(now=8.0).time_text.startswith("03:")
+
+
+def test_large_cancel_needs_to_persist_over_time_not_just_frames():
+    # 5 lectures de "10:00" en 0,8 s (une frame bruitée sondée 5 fois) n'annulent pas ;
+    # la même valeur maintenue 4 s, si.
+    t = SessionTracker(resync_tolerance_seconds=3)
+    t.on_strict_reading(strict("09:00"), now=0.0)
+    t.on_strict_reading(strict("08:59"), now=1.0)
+    t.on_strict_reading(strict("08:58"), now=2.0)
+    for i in range(5):
+        events = t.on_lenient_reading(lenient(time_text="10:00"), now=3.0 + i * 0.2)
+        assert SessionEvent.STOPPED not in events
+    events = t.on_lenient_reading(lenient(time_text="10:00"), now=7.5)
+    assert events == [SessionEvent.STOPPED] and t.last_completed.reason == StopReason.CANCELLED
 
 
 def test_laps_appearing_mid_session_are_detected_even_though_absent_at_start():

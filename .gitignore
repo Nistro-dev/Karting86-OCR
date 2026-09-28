@@ -9,4 +9,5 @@ timer_log.txt
 dist/
 dist_installer/
 build/ApexTimingOCR/
+build/vendor/
 logos/

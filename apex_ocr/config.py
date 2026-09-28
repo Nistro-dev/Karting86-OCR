@@ -40,16 +40,16 @@ def _looks_like_ipv4(value) -> bool:
 class AppConfig:
     window_title: str = ""
     zone: Optional[list[int]] = None
+    # Taille (largeur, hauteur) de la fenêtre au moment où la zone a été définie :
+    # si la fenêtre est ensuite capturée à une autre taille (autre écran/DPI,
+    # redimensionnée), la zone est mise à l'échelle proportionnellement.
+    zone_ref_size: Optional[list[int]] = None
     tesseract_path: str = field(default_factory=find_tesseract)
     ocr_interval_ms: int = 200
     threshold: int = 127
     resync_tolerance_seconds: int = 3
     ocr_lost_timeout_seconds: float = 10.0
     log_retention_days: int = 30
-    external_monitor_index: Optional[int] = None
-    # Désactivé : l'affichage externe ne s'ouvre jamais (ni au démarrage, ni via le bouton).
-    # Désactivé par défaut : à activer dans la fenêtre dev seulement s'il y a un écran piste.
-    external_enabled: bool = False
     # Panneau LED Wi-Fi (RHX8 64×16 à 8 couleurs, voir apex_ocr/led) : à chaque
     # lancement l'appli rejoint elle-même le réseau « RHX8-… » du panneau et s'y
     # connecte (hôte « ip » ou « ip:port », l'IP du panneau ne change jamais), puis
@@ -69,7 +69,8 @@ class AppConfig:
     led_alert_seconds: int = 60
     led_alert_laps: int = 5
     led_laps_only: bool = False
-    log_level: str = "DEBUG"
+    led_idle_clock: bool = True  # hors course : afficher l'heure (sinon écran noir)
+    log_level: str = "INFO"  # DEBUG (lectures OCR brutes) activable à chaud dans la fenêtre dev
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -80,6 +81,8 @@ class AppConfig:
                     data = json.load(f)
             except (json.JSONDecodeError, IOError):
                 data = {}
+            # Les clés inconnues (réglages supprimés : « external_* » de l'ancien affichage
+            # externe, « led_address » du panneau Bluetooth...) sont ignorées sans erreur.
             for key, value in data.items():
                 if hasattr(cfg, key):
                     setattr(cfg, key, value)

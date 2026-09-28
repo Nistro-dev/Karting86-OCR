@@ -6,7 +6,7 @@ et ne fait que lire des images / appeler Tesseract.
 
 Deux fenêtres : ``window`` (minimaliste, toujours visible/réduite dans la
 zone de notification) et ``dev_window`` (configuration/calibration/journal/
-test OCR/affichage externe, masquée par défaut, ouverte via Ctrl+Maj+D).
+test OCR/panneau LED, masquée par défaut, ouverte via Ctrl+Maj+D).
 """
 from __future__ import annotations
 
@@ -28,18 +28,18 @@ from apex_ocr.led import wifi
 from apex_ocr.led.content import panel_content
 from apex_ocr.led.panel import LedPanel, LedStatus
 from apex_ocr.led.protocol import DEFAULT_HOST, WIFI_SSID_PREFIX
-from apex_ocr.led.rendering import color_index
+from apex_ocr.led.rendering import COLOR_NAMES, color_index
 from apex_ocr.logging_setup import set_log_level, setup_logging
 from apex_ocr.ocr import engine
 from apex_ocr.ocr.calibration import calibrate_threshold
 from apex_ocr.ocr.parsing import parse_lenient, parse_strict
 from apex_ocr.ocr.preprocess import preprocess
-from apex_ocr.paths import OUTPUT_PATH, test_page_path
+from apex_ocr.paths import CONFIG_PATH, LOG_DIR, OUTPUT_PATH, test_page_path
+from apex_ocr.power import PowerMonitor
 from apex_ocr.session import DisplayValue, SessionEvent, SessionState, SessionTracker, StopReason, current_display
+from apex_ocr.ui import branding
 from apex_ocr.ui.dev_window import DevWindow, DevWindowCallbacks
-from apex_ocr.ui.external_display import ExternalDisplay
 from apex_ocr.ui.main_window import MainWindow, MainWindowCallbacks
-from apex_ocr.ui.screen_picker import MonitorInfo, ScreenPicker, list_monitors
 from apex_ocr.ui.tray import TrayIcon
 from apex_ocr.ui.zone_selector import ZoneSelector
 
@@ -47,8 +47,8 @@ UI_REFRESH_MS = 200
 LED_WIFI_RETRY_S = 12   # panneau injoignable : nouvel essai Wi-Fi + panneau à cette cadence
 CALIBRATION_SAMPLES = 5
 CALIBRATION_SAMPLE_INTERVAL_S = 0.25
-AUTO_EXTERNAL_RETRY_INTERVAL_MS = 2000
-AUTO_EXTERNAL_MAX_ATTEMPTS = 150  # ~5min au total avant d'abandonner
+PREVIEW_MIN_INTERVAL_S = 0.5      # aperçu de la zone dans la fenêtre dev : 2x/s max, et seulement si visible
+ERROR_LOG_REPEAT_S = 60.0         # une même erreur récurrente n'est journalisée qu'une fois par minute
 
 _REASON_LABELS = {
     StopReason.TIME_ZERO: "temps écoulé",
@@ -56,8 +56,8 @@ _REASON_LABELS = {
     StopReason.CANCELLED: "course annulée",
 }
 
-# Les 8 couleurs du panneau, indexées comme ``rendering.color_index`` (bits R, G, B).
-_LED_COLOR_NAMES = ("noir", "rouge", "vert", "jaune", "bleu", "magenta", "cyan", "blanc")
+TESSERACT_MISSING_MSG = ("Tesseract OCR introuvable — relancer l'installateur, ou l'installer depuis "
+                         "le site UB-Mannheim (dossier par défaut C:\\Program Files\\Tesseract-OCR).")
 
 
 class App:
@@ -78,7 +78,17 @@ class App:
         self._last_error_wall: Optional[float] = None
 
         self.running = False
-        self.external_display: Optional[ExternalDisplay] = None
+        self._ocr_thread: Optional[threading.Thread] = None
+        self._last_preview_wall = 0.0
+        self._last_ocr_raw: Optional[str] = None
+        self._last_capture_reason = ""      # dernière raison d'échec de capture (capture.REASON_*), "" si OK
+        self._logged_errors: dict[str, float] = {}
+        self._output_error_logged = False
+        self._calibration_cancel = threading.Event()
+        self._calibrating = False
+        self._testing_ocr = False
+        self._last_ocr_error = ""          # dernière erreur Tesseract/OCR (texte), "" si tout va bien
+        self._health_detail = ""
 
         self.led = LedPanel(
             self.config.led_width,
@@ -100,20 +110,24 @@ class App:
             self.config,
             MainWindowCallbacks(on_toggle_dev=self._toggle_dev_window, on_close=self._on_close),
         )
+        # Une exception dans un callback Tk (bouton, after...) ne doit ni planter
+        # l'appli ni disparaître : journalisée, l'appli continue.
+        self.window.report_callback_exception = self._tk_exception
 
         dev_callbacks = DevWindowCallbacks(
-            on_refresh_windows=capture.list_window_titles,
+            on_refresh_windows=self._refresh_window_titles,
             on_browse_tesseract=self._browse_tesseract,
             on_select_zone=self._select_zone,
             on_test_ocr=self._test_ocr,
             on_start=self.start,
             on_stop=self.stop,
-            on_open_external=self._open_external,
             on_open_test_page=self._open_test_page,
-            on_external_enabled=self._set_external_enabled,
             on_config_changed=self._persist_config_from_ui,
             on_auto_calibrate=self._auto_calibrate_threshold,
+            on_cancel_calibrate=self.cancel_calibration,
             on_clear_errors=self._clear_errors,
+            on_open_logs=self._open_logs_folder,
+            on_open_config=self._open_config_file,
             on_led_scan=self._led_scan,
             on_led_toggle=self._led_toggle,
             on_led_color=self._led_set_color,
@@ -122,17 +136,32 @@ class App:
             on_led_alert_seconds=self._led_set_alert_seconds,
             on_led_alert_laps=self._led_set_alert_laps,
             on_led_laps_only=self._led_set_laps_only,
+            on_led_show_laps=self._led_set_show_laps,
+            on_led_idle_clock=self._led_set_idle_clock,
+            on_led_wifi_autoconnect=self._led_set_wifi_autoconnect,
+            on_led_chunk_minutes=self._led_set_chunk_minutes,
+            on_led_password=self._led_set_password,
             on_log_level=self._set_log_level,
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
         self.dev_window.set_zone(self.config.zone)
         self.dev_window.set_led_control(self._led_wanted, self.led.status)
+        self._check_tesseract()
 
         self.tray = TrayIcon(
             on_show=lambda: self.window.after(0, self._show_window),
             on_quit=lambda: self.window.after(0, self._really_quit),
         )
         self.tray.start()
+
+        # Mise en veille : fermer proprement la connexion au panneau AVANT (sinon la
+        # carte garde une connexion « zombie » ~3 min au réveil) ; reprise : reconnexion.
+        self.power = PowerMonitor(
+            post=lambda fn: self.window.after(0, fn),
+            on_suspend=self._on_suspend,
+            on_resume=self._on_resume,
+        )
+        self.power.start()
 
         self.dev_window.log("Application prête.")
         self.window.after(UI_REFRESH_MS, self._refresh_tick)
@@ -145,7 +174,6 @@ class App:
 
         if self.config.is_ready:
             self.start()
-            self._auto_open_external()
 
         # Indépendant de la config OCR : le panneau se (re)connecte tout seul
         # au lancement (Wi-Fi compris), puis retente en arrière-plan s'il est
@@ -158,6 +186,43 @@ class App:
 
     def _toggle_dev_window(self) -> None:
         self.dev_window.toggle()
+
+    def _refresh_window_titles(self) -> None:
+        """Liste des fenêtres ouvertes : l'énumération prend jusqu'à quelques centaines
+        de ms -> en tâche de fond, résultat déposé dans la fenêtre dev."""
+        def work():
+            titles = capture.list_window_titles()
+            try:
+                self.window.after(0, self._guarded, self.dev_window.set_window_titles, titles)
+            except (RuntimeError, TclError):
+                pass
+        threading.Thread(target=work, daemon=True, name="window-titles").start()
+
+    def _open_logs_folder(self) -> None:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        os.startfile(LOG_DIR)
+
+    def _open_config_file(self) -> None:
+        if not os.path.exists(CONFIG_PATH):
+            self.config.save()
+        os.startfile(CONFIG_PATH)
+
+    # ---- Tesseract ------------------------------------------------------
+
+    def _tesseract_ok(self) -> bool:
+        path = self.config.tesseract_path
+        return bool(path) and os.path.exists(path)
+
+    def _check_tesseract(self) -> None:
+        """Sans tesseract.exe l'appli ne lira jamais rien : bandeau explicite dans la
+        fenêtre principale (avec le lien de téléchargement) plutôt qu'une erreur muette."""
+        if self._tesseract_ok():
+            self.window.hide_banner()
+            return
+        self.window.show_banner(TESSERACT_MISSING_MSG, branding.TESSERACT_DOWNLOAD_URL)
+        self.logger.warning("tesseract.exe introuvable (%r) : l'OCR ne peut pas fonctionner.",
+                            self.config.tesseract_path)
+        self.dev_window.log(TESSERACT_MISSING_MSG)
 
     # ---- actions déclenchées par l'UI --------------------------------
 
@@ -174,6 +239,7 @@ class App:
         self.tracker.resync_tolerance_seconds = self.config.resync_tolerance_seconds
         self.tracker.ocr_lost_timeout_seconds = self.config.ocr_lost_timeout_seconds
         self.config.save()
+        self._check_tesseract()
 
     def _select_zone(self) -> None:
         title = self.dev_window.window_var.get().strip()
@@ -189,32 +255,70 @@ class App:
         self.dev_window.wait_window(selector)
         if selector.result:
             self.config.zone = selector.result
+            self.config.zone_ref_size = list(img.size)  # pour remettre la zone à l'échelle si la fenêtre change de taille/DPI
             self.dev_window.set_zone(self.config.zone)
             self.config.save()
             self.dev_window.log(f"Zone définie : {self.dev_window.format_zone(self.config.zone)}")
 
     def _test_ocr(self) -> None:
-        img = self._capture_zone()
-        if img is None:
-            self.dev_window.log("Capture impossible. Vérifiez fenêtre et zone.")
+        """Capture + Tesseract (150-400 ms) en tâche de fond : la fenêtre ne gèle pas."""
+        if self._testing_ocr:
             return
-        text = self._read_raw_text(img)
-        self.dev_window.set_preview_image(img)
+        self._persist_config_from_ui()
+        self._testing_ocr = True
+        self.dev_window.set_testing_ocr(True)
+
+        def work():
+            img, reason = self._capture_zone_ex()
+            text, processed, error = "", None, ""
+            if img is not None:
+                try:
+                    processed = preprocess(img, self.config.threshold)
+                    text = engine.extract_text(processed)
+                except Exception as exc:
+                    error = str(exc) or type(exc).__name__
+            try:
+                self.window.after(0, self._guarded, self._on_test_ocr_done, img, processed, text, reason, error)
+            except (RuntimeError, TclError):
+                pass
+        threading.Thread(target=work, daemon=True, name="test-ocr").start()
+
+    def _on_test_ocr_done(self, img, processed, text: str, reason: str, error: str) -> None:
+        self._testing_ocr = False
+        self.dev_window.set_testing_ocr(False)
+        if img is None:
+            self.dev_window.log(f"Test OCR : capture impossible — {capture.CAPTURE_REASON_LABELS.get(reason, reason)}.")
+            return
+        self.dev_window.set_preview_image(img, processed)
+        if error:
+            self.dev_window.log(f"Test OCR : erreur Tesseract — {error}")
+            return
+        self.dev_window.set_last_ocr_text(text.strip())
         reading = parse_strict(text)
         if reading is None:
             self.dev_window.log(
-                f"Test OCR : « {text} » (format non reconnu)" if text else "Test OCR : aucun texte lu."
+                f"Test OCR : « {text.strip()} » (format non reconnu)" if text.strip() else "Test OCR : aucun texte lu."
             )
             return
         laps = f" ({reading.laps_done}/{reading.laps_total})" if reading.has_laps else ""
-        self.dev_window.log(f"Test OCR : « {text} » -> {reading.time_text}{laps} ✓")
+        self.dev_window.log(f"Test OCR : « {text.strip()} » -> {reading.time_text}{laps} ✓")
 
     def _auto_calibrate_threshold(self) -> None:
         if not self.config.window_title or not self.config.zone:
             messagebox.showwarning("Attention", "Sélectionnez une fenêtre et définissez la zone d'abord.")
             return
+        if self._calibrating:
+            self.dev_window.log("Calibration déjà en cours.")
+            return
+        self._calibrating = True
+        self._calibration_cancel.clear()
+        self.dev_window.set_calibrating(True)
         self.dev_window.log(f"Calibration automatique du seuil en cours ({CALIBRATION_SAMPLES} échantillons)...")
         threading.Thread(target=self._run_calibration, daemon=True).start()
+
+    def cancel_calibration(self) -> None:
+        """Interrompt la calibration en cours (sans effet s'il n'y en a pas)."""
+        self._calibration_cancel.set()
 
     def _run_calibration(self) -> None:
         samples: list[Image.Image] = []
@@ -223,12 +327,30 @@ class App:
             if img is not None:
                 samples.append(img)
             time.sleep(CALIBRATION_SAMPLE_INTERVAL_S)
-        best = calibrate_threshold(samples)
+        last_pct = [0]
+
+        def on_progress(done: int, total: int) -> None:
+            pct = done * 100 // total
+            if pct // 20 > last_pct[0] // 20:   # un message tous les 20 %
+                last_pct[0] = pct
+                self.window.after(0, self.dev_window.log, f"Calibration : {pct} %")
+
+        try:
+            best = calibrate_threshold(samples, on_progress=on_progress, cancel=self._calibration_cancel)
+        except Exception as exc:
+            self.logger.exception("Calibration : erreur")
+            best = None
+            self.window.after(0, self.dev_window.log, f"Calibration : erreur ({exc}).")
         self.window.after(0, self._on_calibration_done, best)
 
     def _on_calibration_done(self, best: Optional[int]) -> None:
+        self._calibrating = False
+        self.dev_window.set_calibrating(False)
+        if self._calibration_cancel.is_set():
+            self.dev_window.log("Calibration annulée.")
+            return
         if best is None:
-            self.dev_window.log("Calibration échouée : aucun seuil ne donne une lecture valide. Vérifiez la zone.")
+            self.dev_window.log("Calibration échouée : aucun seuil ne donne une lecture valide et stable. Vérifiez la zone.")
             return
         self.config.threshold = best
         self.dev_window.set_threshold(best)
@@ -242,11 +364,16 @@ class App:
             messagebox.showwarning("Attention", "Sélectionnez une fenêtre et définissez la zone.")
             return
         self._persist_config_from_ui()
+        # Un précédent thread OCR peut encore finir son sleep après un stop() : on
+        # l'attend plutôt que de faire tourner deux boucles en parallèle.
+        if self._ocr_thread is not None and self._ocr_thread.is_alive():
+            self._ocr_thread.join(timeout=max(0.05, self.config.ocr_interval_ms / 1000) + 1.0)
         self.running = True
         self.tracker.reset()
         self.dev_window.set_running(True)
         self.dev_window.log("OCR démarré.")
-        threading.Thread(target=self._ocr_loop, daemon=True).start()
+        self._ocr_thread = threading.Thread(target=self._ocr_loop, daemon=True, name="ocr")
+        self._ocr_thread.start()
 
     def stop(self) -> None:
         self.running = False
@@ -256,9 +383,13 @@ class App:
     # ---- boucle OCR (thread d'arrière-plan) ---------------------------
 
     def _capture_zone(self) -> Optional[Image.Image]:
+        return self._capture_zone_ex()[0]
+
+    def _capture_zone_ex(self) -> tuple[Optional[Image.Image], str]:
+        """(image de la zone, raison d'échec capture.REASON_* ou "")."""
         if not self.config.window_title or not self.config.zone:
-            return None
-        return capture.capture_zone(self.config.window_title, tuple(self.config.zone))
+            return None, capture.REASON_WINDOW_NOT_FOUND
+        return capture.capture_zone_ex(self.config.window_title, tuple(self.config.zone), self.config.zone_ref_size)
 
     def _read_raw_text(self, img: Image.Image) -> str:
         processed = preprocess(img, self.config.threshold)
@@ -267,38 +398,86 @@ class App:
     def _ocr_loop(self) -> None:
         while self.running:
             try:
-                img = self._capture_zone()
+                img, reason = self._capture_zone_ex()
                 if img is None:
-                    self.window.after(0, self._on_capture_failure)
+                    self.window.after(0, self._guarded, self._on_capture_failure, reason)
                 else:
                     text = self._read_raw_text(img)
-                    self.window.after(0, self._on_capture_success, img, text)
+                    self.window.after(0, self._guarded, self._on_capture_success, img, text)
             except Exception as exc:
-                self.window.after(0, self._on_capture_error, exc)
+                try:
+                    self.window.after(0, self._guarded, self._on_capture_error, exc)
+                except (RuntimeError, TclError):  # appli en cours de fermeture
+                    break
             time.sleep(max(0.05, self.config.ocr_interval_ms / 1000))
 
-    def _on_capture_failure(self) -> None:
+    # ---- garde-fous : une exception ne tue ni la boucle Tk ni la boucle OCR ----
+
+    def _guarded(self, fn, *args) -> None:
+        try:
+            fn(*args)
+        except Exception as exc:
+            self._log_error_once(fn.__name__, exc)
+
+    def _log_error_once(self, key: str, exc: Exception) -> None:
+        """Journalise une erreur récurrente (même origine, même type) au plus une fois
+        par ERROR_LOG_REPEAT_S, avec la trace : 5 lignes par seconde ne serviraient à rien."""
+        signature = f"{key}:{type(exc).__name__}"
+        now = time.monotonic()
+        if now - self._logged_errors.get(signature, -ERROR_LOG_REPEAT_S) >= ERROR_LOG_REPEAT_S:
+            self._logged_errors[signature] = now
+            self.logger.exception("Erreur dans %s (l'appli continue) : %s", key, exc)
+
+    def _tk_exception(self, exc_type, exc_value, exc_tb) -> None:
+        self._log_error_once("tk_callback", exc_value if isinstance(exc_value, Exception) else Exception(str(exc_value)))
+
+    def _on_capture_failure(self, reason: str = "") -> None:
         self.health.record_capture_failure()
+        self._set_capture_reason(reason)
 
     def _on_capture_error(self, exc: Exception) -> None:
         self.health.record_capture_failure()
-        self.logger.warning("Erreur OCR : %s", exc)
+        self._last_ocr_error = str(exc).strip().splitlines()[0][:120] if str(exc).strip() else type(exc).__name__
+        self._log_error_once("ocr", exc)
+
+    def _set_capture_reason(self, reason: str) -> None:
+        """Raison d'échec de la capture (exposée à l'UI via _last_capture_reason) ;
+        journalisée à chaque changement, pas à chaque frame."""
+        if reason == self._last_capture_reason:
+            return
+        self._last_capture_reason = reason
+        if reason:
+            self.logger.warning("Capture impossible : %s", capture.CAPTURE_REASON_LABELS.get(reason, reason))
+        else:
+            self.logger.info("Capture rétablie.")
 
     def _on_capture_success(self, img: Image.Image, text: str) -> None:
         self.health.record_capture_success()
-        self.dev_window.set_preview_image(img)
+        self._set_capture_reason("")
+        self._last_ocr_error = ""
         now = time.monotonic()
-
+        raw = text.strip()
+        changed = raw != self._last_ocr_raw   # le texte brut n'est journalisé qu'à son changement
+        self._last_ocr_raw = raw
+        # L'aperçu (redimensionnement + PhotoImage) ne vaut que fenêtre dev visible, 2x/s max ;
+        # l'image prétraitée (celle vue par Tesseract) n'est recalculée que pour lui.
+        if self.dev_window.winfo_viewable():
+            if now - self._last_preview_wall >= PREVIEW_MIN_INTERVAL_S:
+                self._last_preview_wall = now
+                self.dev_window.set_preview_image(img, preprocess(img, self.config.threshold))
+            if changed:
+                self.dev_window.set_last_ocr_text(raw)
         if self.tracker.state == SessionState.RUNNING:
             reading = parse_lenient(text)
-            self.logger.debug("OCR brut=%r → temps=%s tours=%s/%s",
-                              text.strip(), reading.time_text, reading.laps_done, reading.laps_total)
+            if changed:
+                self.logger.debug("OCR brut=%r → temps=%s tours=%s/%s",
+                                  raw, reading.time_text, reading.laps_done, reading.laps_total)
             events = self.tracker.on_lenient_reading(reading, now)
         else:
             strict = parse_strict(text)
-            if strict is not None:
+            if strict is not None and changed:
                 self.logger.debug("OCR brut=%r → strict temps=%s tours=%s/%s",
-                                  text.strip(), strict.time_text, strict.laps_done, strict.laps_total)
+                                  raw, strict.time_text, strict.laps_done, strict.laps_total)
             events = self.tracker.on_strict_reading(strict, now)
 
         self._handle_events(events)
@@ -320,6 +499,19 @@ class App:
     # ---- rafraîchissement UI (indépendant de la boucle OCR) ------------
 
     def _refresh_tick(self) -> None:
+        # Quoi qu'il arrive dans le rafraîchissement, le tick suivant est planifié :
+        # sinon une seule exception fige timer, panneau et santé pour de bon.
+        try:
+            self._refresh_once()
+        except Exception as exc:
+            self._log_error_once("refresh_tick", exc)
+        finally:
+            try:
+                self.window.after(UI_REFRESH_MS, self._refresh_tick)
+            except TclError:  # fenêtre détruite : l'appli se ferme
+                pass
+
+    def _refresh_once(self) -> None:
         now = time.monotonic()
         if self.tracker.state == SessionState.RUNNING:
             self._handle_events(self.tracker.tick(now))
@@ -332,6 +524,7 @@ class App:
             laps_only=self.config.led_laps_only,
             alert_seconds=self.config.led_alert_seconds,
             alert_laps=self.config.led_alert_laps,
+            idle_clock=self.config.led_idle_clock,
         ))
         self._refresh_led_status()
         self._led_watchdog()
@@ -339,25 +532,22 @@ class App:
         status = self.health.status_for(self.tracker.state)
         self._apply_health_status(status)
 
-        if self.external_display is not None:
-            if self.external_display.winfo_exists():
-                self.external_display.set_display(display)
-                self.external_display.set_health(status)
-            else:
-                self.external_display = None
-                self.dev_window.set_external_open(False)
-
-        self.window.after(UI_REFRESH_MS, self._refresh_tick)
-
     def _sync_output(self, display: DisplayValue) -> None:
         if display.time_text == self._last_output_text:
             return
         self._last_output_text = display.time_text
+        # Écriture atomique : le lecteur externe ne voit jamais un fichier vide/tronqué,
+        # et s'il verrouille le fichier, l'erreur est journalisée une fois, pas à chaque tick.
+        tmp = OUTPUT_PATH + ".tmp"
         try:
-            with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(display.time_text)
-        except IOError:
-            pass
+            os.replace(tmp, OUTPUT_PATH)
+            self._output_error_logged = False
+        except OSError as exc:
+            if not self._output_error_logged:
+                self._output_error_logged = True
+                self.logger.warning("Écriture de %s impossible : %s", OUTPUT_PATH, exc)
         if display.is_live:
             laps = f" ({display.laps_done}/{display.laps_total})" if display.laps_total is not None else ""
             self.logger.info("Timer %s%s", display.time_text, laps)
@@ -369,6 +559,7 @@ class App:
         if current != self._last_led_status:
             self._last_led_status = current
             self.dev_window.set_led_status(*current)
+            self.window.set_led_status(*current)
             self.dev_window.set_led_control(self._led_wanted, self.led.status)
 
     def _led_host_from_ui(self) -> str:
@@ -487,7 +678,7 @@ class App:
         self.led.set_color(rgb)
         self.dev_window.log(
             "Couleur du panneau LED : #%02x%02x%02x -> %s (8 couleurs disponibles)."
-            % (*tuple(rgb), _LED_COLOR_NAMES[color_index(rgb)])
+            % (*tuple(rgb), COLOR_NAMES[color_index(rgb)])
         )
 
     def _led_set_brightness(self, level: int) -> None:
@@ -513,10 +704,40 @@ class App:
     def _led_set_alert_seconds(self, seconds: int) -> None:
         self.config.led_alert_seconds = seconds
         self.config.save()
+        self.dev_window.log(f"Alerte LED : {seconds} dernières secondes.")
 
     def _led_set_alert_laps(self, laps: int) -> None:
         self.config.led_alert_laps = laps
         self.config.save()
+        self.dev_window.log(f"Alerte LED : {laps} derniers tours.")
+
+    def _led_set_show_laps(self, enabled: bool) -> None:
+        self.config.led_show_laps = enabled
+        self.config.save()
+        self.led.set_show_laps(enabled)
+        self.dev_window.log("Panneau LED : " + ("tours à côté du temps" if enabled else "temps seul"))
+
+    def _led_set_idle_clock(self, enabled: bool) -> None:
+        self.config.led_idle_clock = enabled
+        self.config.save()
+        self.dev_window.log("Panneau LED hors course : " + ("heure affichée" if enabled else "écran noir"))
+
+    def _led_set_wifi_autoconnect(self, enabled: bool) -> None:
+        self.config.led_wifi_autoconnect = enabled
+        self.config.save()
+        self.dev_window.log("Wi-Fi RHX8 : " + ("rejoint automatiquement" if enabled else "laissé tel quel (manuel)"))
+
+    def _led_set_chunk_minutes(self, minutes: int) -> None:
+        self.config.led_resync_minutes = minutes
+        self.config.save()
+        self.led.set_chunk_minutes(minutes)
+        self.dev_window.log(f"Panneau LED : tranches de {minutes} min (à partir de la prochaine tranche).")
+
+    def _led_set_password(self, password: str) -> None:
+        self.config.led_password = password
+        self.config.save()
+        self.led.set_password(password)
+        self.dev_window.log("Mot de passe du panneau LED enregistré (reconnexion si nécessaire).")
 
     def _set_log_level(self, level: str) -> None:
         self.config.log_level = level
@@ -524,13 +745,32 @@ class App:
         set_log_level(level)
         self.dev_window.log(f"Niveau de log : {level}")
 
+    def _health_detail_text(self, status: HealthStatus) -> str:
+        """Ce qui ne va pas, en clair (fenêtre principale, fenêtre dev, infobulle systray)."""
+        if not self._tesseract_ok():
+            return "tesseract.exe introuvable : l'OCR ne peut pas fonctionner."
+        if status != HealthStatus.ERROR:
+            return ""
+        if self._last_capture_reason == capture.REASON_WINDOW_NOT_FOUND:
+            title = self.config.window_title or "(aucune)"
+            return f"Fenêtre « {title} » introuvable : Apex Timing fermé ou titre différent ?"
+        if self._last_capture_reason:
+            label = capture.CAPTURE_REASON_LABELS.get(self._last_capture_reason, self._last_capture_reason)
+            return label[0].upper() + label[1:] + "."
+        if self._last_ocr_error:
+            return f"Tesseract : {self._last_ocr_error}"
+        return "Capture ou lecture en échec depuis trop longtemps (voir le journal)."
+
     def _apply_health_status(self, status: HealthStatus) -> None:
         # Pas de notification Windows ici (trop intrusif : se déclenchait à
         # chaque changement de fenêtre) -> l'icône colorée dans la zone de
         # notification suffit, l'historique reste dans le log.
-        self.window.set_health(status)
-        self.dev_window.set_health(status)
-        self.tray.set_status(status)
+        detail = self._health_detail_text(status)
+        if status != self._last_health_status or detail != self._health_detail:
+            self._health_detail = detail
+            self.window.set_health(status, detail)
+            self.dev_window.set_health(status, detail)
+            self.tray.set_status(status, detail)
         if status != self._last_health_status:
             if status == HealthStatus.ERROR:
                 self._error_count += 1
@@ -569,94 +809,6 @@ class App:
         webbrowser.open(Path(path).as_uri())
         self.dev_window.log(f"Page de test ouverte dans le navigateur : {path}")
 
-    # ---- affichage externe ---------------------------------------------
-
-    def _open_external(self) -> None:
-        # Repli fiable pour fermer l'affichage externe : la fenêtre dev
-        # a toujours le focus normalement, contrairement à l'écran plein écran.
-        if self.external_display is not None and self.external_display.winfo_exists():
-            self.external_display.destroy()
-            self.external_display = None
-            self.dev_window.set_external_open(False)
-            self.dev_window.log("Affichage externe fermé.")
-            return
-        ScreenPicker(self.dev_window, on_selected=self._open_external_on)
-
-    def _set_external_enabled(self, enabled: bool) -> None:
-        self.config.external_enabled = enabled
-        self.config.save()
-        self.dev_window.set_external_enabled(enabled)
-        if enabled:
-            self.dev_window.log("Affichage externe activé.")
-            self._auto_open_external()
-            return
-        if self.external_display is not None and self.external_display.winfo_exists():
-            self.external_display.destroy()
-        self.external_display = None
-        self.dev_window.set_external_open(False)
-        self.dev_window.log("Affichage externe désactivé (ne s'ouvrira plus au démarrage).")
-
-    def _open_external_on(self, monitor: MonitorInfo) -> None:
-        if self.external_display is not None and self.external_display.winfo_exists():
-            self.external_display.destroy()
-        self.external_display = ExternalDisplay(self.window, monitor)
-        self.dev_window.set_external_open(True)
-        self.dev_window.log(f"Affichage externe ouvert sur {monitor.label}.")
-        self.config.external_monitor_index = monitor.index
-        self.config.save()
-
-    def _auto_open_external(self) -> None:
-        """Rouvre l'affichage externe sur l'écran mémorisé au démarrage,
-        sans action manuelle (config déjà prête = usage prod).
-
-        Réessaie plusieurs fois : au boot, un écran externe (souvent un
-        contrôleur/convertisseur piste) peut mettre plusieurs secondes à
-        être détecté par Windows, donc absent de ``list_monitors()`` au
-        tout premier essai ne veut pas dire indisponible."""
-        if not self.config.external_enabled:
-            self.logger.info("Affichage externe désactivé : pas d'ouverture automatique.")
-            return
-        if self.config.external_monitor_index is None:
-            return
-        self.logger.info(
-            "Recherche de l'écran externe #%d au démarrage...", self.config.external_monitor_index
-        )
-        self._try_auto_open_external(attempt=1)
-
-    def _try_auto_open_external(self, attempt: int) -> None:
-        # désactivé entre-temps (ou déjà ouvert à la main) : on arrête les essais
-        if not self.config.external_enabled or self.external_display is not None:
-            return
-        match = next(
-            (m for m in list_monitors() if m.index == self.config.external_monitor_index), None
-        )
-        if match is not None:
-            self._open_external_on(match)
-            self.logger.info(
-                "Affichage externe ouvert automatiquement sur %s (tentative %d/%d).",
-                match.label, attempt, AUTO_EXTERNAL_MAX_ATTEMPTS,
-            )
-            return
-
-        if attempt >= AUTO_EXTERNAL_MAX_ATTEMPTS:
-            self.logger.warning(
-                "Écran externe #%d introuvable après %d tentatives (~%.0fs). "
-                "Ouverture manuelle nécessaire (Ctrl+Maj+D -> Affichage externe).",
-                self.config.external_monitor_index,
-                attempt,
-                attempt * AUTO_EXTERNAL_RETRY_INTERVAL_MS / 1000,
-            )
-            return
-
-        self.logger.info(
-            "Écran externe #%d pas encore détecté (tentative %d/%d), nouvel essai dans %.0fs.",
-            self.config.external_monitor_index,
-            attempt,
-            AUTO_EXTERNAL_MAX_ATTEMPTS,
-            AUTO_EXTERNAL_RETRY_INTERVAL_MS / 1000,
-        )
-        self.window.after(AUTO_EXTERNAL_RETRY_INTERVAL_MS, self._try_auto_open_external, attempt + 1)
-
     # ---- cycle de vie ----------------------------------------------------
 
     def _show_window(self) -> None:
@@ -670,9 +822,21 @@ class App:
         self.dev_window.withdraw()
         self.dev_window.log("Réduit dans la zone de notification.")
 
+    # ---- veille / reprise ----------------------------------------------
+
+    def _on_suspend(self) -> None:
+        self.logger.info("Mise en veille : fermeture propre de la connexion au panneau LED.")
+        self.led.disconnect()
+
+    def _on_resume(self) -> None:
+        self.logger.info("Reprise après veille.")
+        if self._led_wanted:
+            self._led_connect(self.config.led_host)
+
     def _really_quit(self) -> None:
         self.running = False
         self._persist_config_from_ui()
+        self.power.stop()
         self.led.shutdown()
         self.tray.stop()
         self.dev_window.destroy()

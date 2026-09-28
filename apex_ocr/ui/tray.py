@@ -1,7 +1,7 @@
 """Icône dans la zone de notification : logo New Kart Poitiers teinté selon
 l'état de santé (gris = attente, vert = course suivie, rouge = problème).
-Le clic droit affiche un menu dont la première ligne donne le statut
-courant, en plus d'Afficher/Quitter."""
+L'infobulle et la première ligne du menu (clic droit) donnent le statut
+courant et le détail du problème s'il y en a un, en plus d'Afficher/Quitter."""
 from __future__ import annotations
 
 import threading
@@ -12,17 +12,7 @@ import pystray
 from apex_ocr.health import HealthStatus
 from apex_ocr.ui import branding
 
-_TINTS: dict[HealthStatus, tuple[int, int, int]] = {
-    HealthStatus.IDLE: (140, 140, 140),
-    HealthStatus.ACTIVE: (0, 201, 74),
-    HealthStatus.ERROR: (237, 27, 36),
-}
-
-_STATUS_LABELS = {
-    HealthStatus.IDLE: "En attente",
-    HealthStatus.ACTIVE: "Course suivie",
-    HealthStatus.ERROR: "Problème",
-}
+_TOOLTIP_MAX = 120   # limite Windows pour l'infobulle d'une icône de notification
 
 
 def build_default_icon_image(size: int = 64):
@@ -33,12 +23,13 @@ def build_default_icon_image(size: int = 64):
 class TrayIcon:
     def __init__(self, on_show: Callable[[], None], on_quit: Callable[[], None]):
         self._icons = {
-            status: branding.build_status_icon(64, tint, round_shape=True) for status, tint in _TINTS.items()
+            status: branding.build_status_icon(64, tint, round_shape=True)
+            for status, tint in branding.HEALTH_TINTS.items()
         }
         self._icon: Optional[pystray.Icon] = None
         self._on_show = on_show
         self._on_quit = on_quit
-        self._current_status: Optional[HealthStatus] = None
+        self._current: Optional[tuple[HealthStatus, str]] = None
         self._status_text = "État : inconnu"
 
     def start(self) -> None:
@@ -51,22 +42,16 @@ class TrayIcon:
         self._icon = pystray.Icon("ApexTimingOCR", self._icons[HealthStatus.IDLE], "Apex Timing OCR", menu)
         threading.Thread(target=self._icon.run, daemon=True).start()
 
-    def set_status(self, status: HealthStatus) -> None:
-        if self._icon is None or status == self._current_status:
+    def set_status(self, status: HealthStatus, detail: str = "") -> None:
+        if self._icon is None or (status, detail) == self._current:
             return
-        self._current_status = status
-        self._status_text = f"État : {_STATUS_LABELS[status]}"
+        self._current = (status, detail)
+        label = branding.HEALTH_LABELS[status][0]
+        self._status_text = f"État : {label}" + (f" — {detail}" if detail else "")
         self._icon.icon = self._icons[status]
         try:
+            self._icon.title = f"Apex Timing OCR — {label}" + (f"\n{detail}" if detail else "")[:_TOOLTIP_MAX]
             self._icon.update_menu()
-        except Exception:
-            pass
-
-    def notify(self, title: str, message: str) -> None:
-        if self._icon is None:
-            return
-        try:
-            self._icon.notify(message, title)
         except Exception:
             pass
 
