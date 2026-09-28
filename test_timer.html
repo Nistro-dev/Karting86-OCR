@@ -24,6 +24,9 @@
     font-family: Segoe UI, Arial, sans-serif;
     color: #eee;
   }
+  /* La boîte garde TOUJOURS la même taille (celle de "00:00:00" à la taille de
+     référence), quel que soit le contenu : la zone OCR calibrée reste valable.
+     C'est le texte qui est réduit pour tenir dedans, jamais la boîte qui grandit. */
   #display {
     background: var(--bg);
     color: var(--fg);
@@ -35,34 +38,18 @@
     border-radius: 8px;
     user-select: none;
     letter-spacing: 0.05em;
-  }
-  #status {
-    margin-top: 12px;
-    font-size: 14px;
-    color: #9a9;
-    min-height: 18px;
-  }
-  #modeBar {
-    margin-top: 20px;
     display: flex;
-    gap: 8px;
-    background: #1a1a1a;
-    padding: 4px;
-    border-radius: 20px;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+    overflow: hidden;
   }
-  #modeBar button {
-    border: none;
-    border-radius: 16px;
-    padding: 8px 18px;
-    background: transparent;
-    color: #aaa;
-  }
-  #modeBar button.active {
-    background: #4a7;
-    color: #111;
+  #displayText {
+    font-size: inherit;
+    line-height: 1;
   }
   #panel {
-    margin-top: 18px;
+    margin-top: 24px;
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
@@ -82,31 +69,18 @@
   }
   button:hover { background: #444; }
   label { font-size: 14px; }
-  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 
-  <div id="display">02:00</div>
-  <div id="status"></div>
-
-  <div id="modeBar">
-    <button id="modeAutoBtn" class="active">Auto (démarrage immédiat)</button>
-    <button id="modeManualBtn">Manuel (contrôle complet)</button>
-  </div>
+  <div id="display"><span id="displayText">02:00</span></div>
 
   <div id="panel">
     <label>Durée <input id="startInput" type="text" value="02:00" size="6"></label>
 
-    <span id="manualControls" hidden>
-      <button id="btnStart">▶ Démarrer</button>
-      <button id="btnPause">⏸ Pause</button>
-      <button id="btnReset">⟲ Réinitialiser</button>
-    </span>
-
-    <span id="autoControls">
-      <button id="btnRestartAuto">⟲ Relancer maintenant</button>
-    </span>
+    <button id="btnStart">▶ Démarrer</button>
+    <button id="btnPause">⏸ Pause</button>
+    <button id="btnReset">⟲ Réinitialiser</button>
 
     <select id="modeSelect">
       <option value="down">Compte à rebours</option>
@@ -125,19 +99,16 @@
 
 <script>
   const display = document.getElementById('display');
-  const statusEl = document.getElementById('status');
+  const displayText = document.getElementById('displayText');
   const startInput = document.getElementById('startInput');
   const modeSelect = document.getElementById('modeSelect');
   const fmtSelect = document.getElementById('fmtSelect');
-  const manualControls = document.getElementById('manualControls');
-  const autoControls = document.getElementById('autoControls');
-  const modeAutoBtn = document.getElementById('modeAutoBtn');
-  const modeManualBtn = document.getElementById('modeManualBtn');
   const lapsToggle = document.getElementById('lapsToggle');
   const lapsTotalInput = document.getElementById('lapsTotalInput');
   const btnLapDone = document.getElementById('btnLapDone');
 
   const STORAGE_KEY = 'apexOcrTestTimer';
+  const BOX_REFERENCE_TEXT = '00:00:00';   // contenu qui définit la taille (fixe) de la boîte
 
   function loadSettings() {
     try {
@@ -155,7 +126,13 @@
   }
 
   const settings = loadSettings();
-  let appMode = settings.appMode || 'auto'; // 'auto' | 'manual'
+  // Paramètres d'URL (tests) : ?duration=10:00&fmt=hhmmss&laps=1&lapsTotal=20&theme=dark
+  const params = new URLSearchParams(location.search);
+  if (params.has('duration')) settings.duration = params.get('duration');
+  if (params.has('fmt')) settings.fmt = params.get('fmt');
+  if (params.has('laps')) settings.showLaps = params.get('laps') === '1';
+  if (params.has('lapsTotal')) settings.lapsTotal = params.get('lapsTotal');
+  if (params.has('theme')) settings.theme = params.get('theme');
   startInput.value = settings.duration || '02:00';
   modeSelect.value = settings.countMode || 'down';
   fmtSelect.value = settings.fmt || 'mmss';
@@ -164,6 +141,32 @@
   if (settings.theme === 'dark') document.body.classList.add('dark');
 
   let lapsDone = 0;
+
+  // --- Boîte à taille fixe, texte réduit pour tenir dedans ---
+  function lockBoxSize() {
+    display.style.width = '';
+    display.style.height = '';
+    displayText.style.fontSize = '';
+    const current = displayText.textContent;
+    displayText.textContent = BOX_REFERENCE_TEXT;
+    const box = display.getBoundingClientRect();
+    display.style.width = `${box.width}px`;
+    display.style.height = `${box.height}px`;
+    displayText.textContent = current;
+    fitText();
+  }
+
+  function fitText() {
+    displayText.style.fontSize = '';
+    const cs = getComputedStyle(display);
+    const avail = display.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const width = displayText.getBoundingClientRect().width;
+    if (width > avail && width > 0) {
+      displayText.style.fontSize = `${parseFloat(cs.fontSize) * avail / width}px`;
+    }
+  }
+
+  window.addEventListener('resize', lockBoxSize);
 
   function parseToSeconds(str) {
     const parts = str.split(':').map(n => parseInt(n, 10) || 0);
@@ -189,7 +192,6 @@
   let running = false;
   let lastTick = null;
   let rafId = null;
-  let launchedAt = null;
 
   function currentSeconds() {
     if (modeSelect.value === 'down') {
@@ -200,10 +202,11 @@
 
   function render() {
     const time = formatSeconds(currentSeconds());
-    if (lapsToggle.checked) {
-      display.textContent = `${lapsDone}/${lapsTotalInput.value} ${time}`;
-    } else {
-      display.textContent = time;
+    // Tours à gauche du temps, sur la même ligne (jamais au-dessus).
+    const text = lapsToggle.checked ? `${lapsDone}/${lapsTotalInput.value} ${time}` : time;
+    if (displayText.textContent !== text) {
+      displayText.textContent = text;
+      fitText();
     }
   }
 
@@ -227,8 +230,6 @@
     if (running) return;
     running = true;
     lastTick = null;
-    launchedAt = new Date();
-    updateStatus();
     rafId = requestAnimationFrame(tick);
   }
 
@@ -246,54 +247,7 @@
     render();
   }
 
-  function updateStatus() {
-    if (appMode === 'auto' && launchedAt) {
-      const t = launchedAt.toLocaleTimeString();
-      statusEl.textContent = `● Lancé automatiquement à ${t} — durée réglée sur ${startInput.value}`;
-    } else {
-      statusEl.textContent = '';
-    }
-  }
-
-  function applyModeUI() {
-    if (appMode === 'auto') {
-      modeAutoBtn.classList.add('active');
-      modeManualBtn.classList.remove('active');
-      manualControls.hidden = true;
-      autoControls.hidden = false;
-    } else {
-      modeManualBtn.classList.add('active');
-      modeAutoBtn.classList.remove('active');
-      manualControls.hidden = false;
-      autoControls.hidden = true;
-      statusEl.textContent = '';
-    }
-  }
-
-  function launchAutoMode() {
-    resetTimer();
-    startTimer();
-  }
-
-  // --- Mode switch ---
-  modeAutoBtn.addEventListener('click', () => {
-    appMode = 'auto';
-    saveSettings({ appMode });
-    applyModeUI();
-    launchAutoMode();
-  });
-
-  modeManualBtn.addEventListener('click', () => {
-    appMode = 'manual';
-    saveSettings({ appMode });
-    pauseTimer();
-    applyModeUI();
-    resetTimer();
-  });
-
-  document.getElementById('btnRestartAuto').addEventListener('click', launchAutoMode);
-
-  // --- Manual controls ---
+  // --- Contrôles (aucun démarrage automatique : on lance à la main) ---
   document.getElementById('btnStart').addEventListener('click', startTimer);
   document.getElementById('btnPause').addEventListener('click', pauseTimer);
   document.getElementById('btnReset').addEventListener('click', resetTimer);
@@ -306,13 +260,11 @@
   startInput.addEventListener('change', () => {
     saveSettings({ duration: startInput.value });
     resetTimer();
-    if (appMode === 'auto') startTimer();
   });
 
   modeSelect.addEventListener('change', () => {
     saveSettings({ countMode: modeSelect.value });
     resetTimer();
-    if (appMode === 'auto') startTimer();
   });
 
   fmtSelect.addEventListener('change', () => {
@@ -336,10 +288,10 @@
   });
 
   // --- Init ---
-  applyModeUI();
+  lockBoxSize();
   resetTimer();
-  if (appMode === 'auto') {
-    startTimer();
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(lockBoxSize);
   }
 </script>
 </body>

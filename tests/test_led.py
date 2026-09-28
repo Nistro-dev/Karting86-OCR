@@ -10,7 +10,7 @@ import pytest
 
 from apex_ocr.led import panel as panel_mod
 from apex_ocr.led import protocol
-from apex_ocr.led.content import PanelContent, panel_content
+from apex_ocr.led.content import PanelContent, panel_content, trim_zero_hours
 from apex_ocr.led.panel import LedPanel, LedStatus
 from apex_ocr.led.rendering import (BLUE, GREEN, RED, WHITE, Frame, TimerRenderer, build_program, color_index,
                                     format_like, parse_seconds, program_length, program_size)
@@ -49,6 +49,14 @@ def test_content_time_and_laps_padded():
 def test_content_laps_three_digits():
     value = DisplayValue("1:09:58", 7, 120, is_live=True)
     assert panel_content(SessionState.RUNNING, value).laps_text == "007/120"
+
+
+def test_content_drops_zero_hours():
+    assert panel_content(SessionState.RUNNING, DisplayValue("00:10:00", None, None, True)).time_text == "10:00"
+    assert panel_content(SessionState.RUNNING, DisplayValue("0:09:58", None, None, True)).time_text == "09:58"
+    assert panel_content(SessionState.RUNNING, DisplayValue("1:09:58", None, None, True)).time_text == "1:09:58"
+    assert panel_content(SessionState.RUNNING, DisplayValue("01:09:58", None, None, True)).time_text == "01:09:58"
+    assert trim_zero_hours("09:58") == "09:58"
 
 
 def test_content_laps_only_is_static_text():
