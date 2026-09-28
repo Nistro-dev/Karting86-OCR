@@ -30,7 +30,6 @@
   #display {
     background: var(--bg);
     color: var(--fg);
-    font-family: "Consolas", "Courier New", monospace;
     font-weight: bold;
     font-size: 15vw;
     line-height: 1;
@@ -293,6 +292,7 @@
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(lockBoxSize);
   }
+  if (params.get('run') === '1') startTimer();   // démarrage auto pour les tests uniquement (?run=1)
 </script>
 </body>
 </html>

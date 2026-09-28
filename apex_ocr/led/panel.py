@@ -37,6 +37,7 @@ RETRY_MAX_S = 5.0    # on retente souvent : après une coupure, la carte RHX8 ga
 SHUTDOWN_TIMEOUT_S = 3.0
 RESYNC_TOLERANCE_S = 2         # écart toléré entre le temps demandé et la séquence en cours
 FROZEN_S = 2.5                 # valeur OCR inchangée depuis ce délai = chrono arrêté -> image fixe
+CLOCK_GRACE_S = 6.0            # pendant un décompte, un passage transitoire à l'horloge (trou de lecture OCR) est ignoré ce temps
 DEFAULT_CHUNK_MIN = 2          # le panneau repart du début après ~4 min : décompte envoyé par tranches
 CHUNK_EXTRA_S = 10             # trames de réserve au-delà de la tranche, le temps d'envoyer la suivante
 UPLOAD_RATE_DEFAULT = 120_000  # octets/s (mesuré : 349 Ko en 2,9 s), affiné à chaque envoi
@@ -104,6 +105,7 @@ class LedPanel:
         self._sock: Optional[socket.socket] = None
         self._sent: object = _UNSENT          # contenu (ou None) matérialisé par le programme envoyé
         self._seq: Optional[_Sequence] = None
+        self._clock_since: Optional[float] = None   # depuis quand l'horloge est demandée (anti-flash)
         self._last_io = 0.0                   # dernier échange réussi (pour cadencer le battement de cœur)
         self._upload_rate = float(UPLOAD_RATE_DEFAULT)
         self._last_requested: object = _UNSENT
@@ -124,8 +126,21 @@ class LedPanel:
         """Contenu voulu (``None`` = écran vide)."""
         if content == self._last_requested:
             return
+        prev = self._last_requested
         self._last_requested = content
-        self._set(desired=content, desired_since=time.monotonic())
+        now = time.monotonic()
+        with self._lock:
+            self._desired = content
+            self._desired_since = now
+            # Début d'une demande d'horloge (pour la grâce anti-flash) : on note l'instant
+            # où l'on est passé du décompte à l'horloge, pas chaque rafraîchissement de l'heure.
+            if content is not None and content.clock:
+                if not (isinstance(prev, PanelContent) and prev.clock):
+                    self._clock_since = now
+            else:
+                self._clock_since = None
+            self._wake = True
+            self._lock.notify()
 
     def set_color(self, rgb: tuple) -> None:
         with self._lock:
@@ -236,10 +251,19 @@ class LedPanel:
         """Le temps demandé n'a pas changé depuis FROZEN_S : le chrono est arrêté (pause, fin)."""
         return time.monotonic() - self._desired_since >= FROZEN_S
 
+    def _playing_countdown(self) -> bool:
+        return self._seq is not None and not self._seq.static
+
     def _needs_send(self) -> bool:
         target = self._desired
         if self._sent is _UNSENT:
             return True
+        # Anti-flash : le panneau joue le décompte tout seul ; un passage transitoire à
+        # l'horloge (trou de lecture OCR) est ignoré quelques secondes — on ne coupe pas
+        # le décompte pour afficher l'heure puis le renvoyer aussitôt.
+        if (target is not None and target.clock and self._playing_countdown()
+                and self._clock_since is not None and time.monotonic() - self._clock_since < CLOCK_GRACE_S):
+            return False
         if target is None or self._sent is None:
             return target != self._sent
         return self._sequence_deviates(target)

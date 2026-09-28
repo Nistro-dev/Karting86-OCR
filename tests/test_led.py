@@ -451,6 +451,29 @@ def test_alert_from_laps_recolors_everything(led, fake):
     assert all(colors_of(f) == {GREEN} for f in fake.last_frames)
 
 
+def test_clock_blip_during_countdown_is_absorbed(led, fake, monkeypatch):
+    monkeypatch.setattr(panel_mod, "CLOCK_GRACE_S", 1.0)
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
+    led.show(PanelContent("00:30"))
+    wait_until(lambda: len(fake.uploads) == 2)
+    n = len(fake.uploads)
+    led.show(PanelContent("16:59", clock=True))   # trou de lecture OCR : l'appli demande l'horloge
+    led.show(PanelContent("00:29"))               # lecture revenue avant la fin de la grâce
+    time.sleep(0.3)
+    assert len(fake.uploads) == n                 # le décompte n'a pas été coupé, aucune horloge envoyée
+
+
+def test_clock_shown_after_grace_when_countdown_really_stops(led, fake, monkeypatch):
+    monkeypatch.setattr(panel_mod, "CLOCK_GRACE_S", 0.3)
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
+    led.show(PanelContent("00:30"))
+    wait_until(lambda: len(fake.uploads) == 2)
+    led.show(PanelContent("16:59", clock=True))   # l'horloge persiste (course finie)
+    wait_until(lambda: len(fake.last_frames) == 1)  # après la grâce, l'horloge s'affiche
+
+
 def test_zero_is_static(led, fake):
     led.connect("192.168.47.1")
     wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
