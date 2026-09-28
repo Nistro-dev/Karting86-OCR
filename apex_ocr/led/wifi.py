@@ -1,18 +1,21 @@
-"""Rattachement (optionnel) du PC au réseau Wi-Fi du panneau RHX8 via ``netsh wlan``
-— Windows uniquement.
+"""Rattachement du PC au réseau Wi-Fi du panneau RHX8 via ``netsh wlan`` — Windows uniquement.
 
 Tout est gardé : hors Windows, sans carte Wi-Fi ou si netsh échoue, les fonctions
-renvoient ``None`` / ``False`` / ``[]`` sans jamais lever. Le réseau doit déjà être
-connu de Windows (profil créé lors d'une première connexion manuelle) :
-``netsh wlan connect`` ne crée pas de profil.
+renvoient ``None`` / ``False`` / ``[]`` sans jamais lever. Le réseau du panneau est
+ouvert (sans mot de passe) : si Windows ne le connaît pas encore, l'appli crée
+elle-même le profil (``netsh wlan add profile``), aucune première connexion
+manuelle n'est nécessaire.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Optional
+from xml.sax.saxutils import escape
 
 NETSH_TIMEOUT_S = 15.0
 CONNECT_WAIT_S = 12.0    # délai max pour que l'interface passe sur le réseau demandé
@@ -46,24 +49,64 @@ def saved_profiles() -> list[str]:
     return [s for s in _KEY_VALUE_RE.findall(out) if s] if out else []
 
 
+def profile_xml(ssid: str) -> str:
+    """Profil Windows d'un réseau ouvert (sans clé). Connexion « auto » : une fois le
+    profil créé, Windows rejoint le panneau tout seul dès qu'il est à portée."""
+    name = escape(ssid)
+    hexed = ssid.encode("utf-8").hex().upper()
+    return (
+        '<?xml version="1.0"?>\n'
+        '<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">\n'
+        f"  <name>{name}</name>\n"
+        f"  <SSIDConfig><SSID><hex>{hexed}</hex><name>{name}</name></SSID></SSIDConfig>\n"
+        "  <connectionType>ESS</connectionType>\n"
+        "  <connectionMode>auto</connectionMode>\n"
+        "  <MSM><security><authEncryption>"
+        "<authentication>open</authentication><encryption>none</encryption><useOneX>false</useOneX>"
+        "</authEncryption></security></MSM>\n"
+        "</WLANProfile>\n"
+    )
+
+
+def ensure_profile(ssid: str) -> bool:
+    """Crée dans Windows le profil du réseau ouvert ``ssid`` s'il n'existe pas encore."""
+    if not ssid:
+        return False
+    if ssid in saved_profiles():
+        return True
+    path = None
+    try:
+        fd, path = tempfile.mkstemp(suffix=".xml", prefix="rhx8_wifi_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(profile_xml(ssid))
+        return _netsh(f'add profile filename="{path}" user=current') is not None
+    except OSError:
+        return False
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def connect_to_prefix(prefix: str, timeout: float = CONNECT_WAIT_S) -> bool:
-    """Rejoint un réseau dont le SSID commence par ``prefix`` : d'abord ceux à la
-    fois visibles et connus de Windows, puis les profils enregistrés (le cache des
-    réseaux visibles peut être vide juste après l'allumage du panneau), enfin les
-    réseaux visibles sans profil (netsh les refusera, sauf profil nommé autrement).
+    """Rejoint un réseau dont le SSID commence par ``prefix`` : d'abord ceux à portée
+    (profil Windows créé au besoin), puis les profils enregistrés (le cache des
+    réseaux visibles peut être vide juste après l'allumage du panneau).
 
     True si, à la sortie, l'interface est sur un tel réseau (déjà le cas, ou
-    connexion aboutie dans le délai) ; False sinon (réseau absent, profil inconnu
-    de Windows, échec, plateforme non gérée)."""
+    connexion aboutie dans le délai) ; False sinon (réseau absent, échec,
+    plateforme non gérée)."""
     try:
         if _on_prefix(prefix):
             return True
         visible = [s for s in visible_ssids() if s.startswith(prefix)]
         profiles = [p for p in saved_profiles() if p.startswith(prefix)]
-        ordered = ([s for s in visible if s in profiles]
-                   + [p for p in profiles if p not in visible]
-                   + [s for s in visible if s not in profiles])
-        for ssid in ordered:
+        for ssid in visible:
+            if ssid not in profiles:
+                ensure_profile(ssid)
+        for ssid in visible + [p for p in profiles if p not in visible]:
             if _connect(ssid) and _wait_on_prefix(prefix, timeout):
                 return True
         return False

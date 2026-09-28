@@ -44,6 +44,7 @@ from apex_ocr.ui.tray import TrayIcon
 from apex_ocr.ui.zone_selector import ZoneSelector
 
 UI_REFRESH_MS = 200
+LED_WIFI_RETRY_S = 12   # panneau injoignable : nouvel essai Wi-Fi + panneau à cette cadence
 CALIBRATION_SAMPLES = 5
 CALIBRATION_SAMPLE_INTERVAL_S = 0.25
 AUTO_EXTERNAL_RETRY_INTERVAL_MS = 2000
@@ -91,6 +92,9 @@ class App:
             resync_minutes=self.config.led_resync_minutes,
         )
         self._last_led_status: Optional[tuple[LedStatus, str]] = None
+        self._led_wanted = self.config.led_enabled   # « Déconnecter » ne vaut que pour la session
+        self._wifi_joining = False
+        self._wifi_last_attempt = 0.0
 
         self.window = MainWindow(
             self.config,
@@ -122,7 +126,7 @@ class App:
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
         self.dev_window.set_zone(self.config.zone)
-        self.dev_window.set_led_enabled(self.config.led_enabled)
+        self.dev_window.set_led_control(self._led_wanted, self.led.status)
 
         self.tray = TrayIcon(
             on_show=lambda: self.window.after(0, self._show_window),
@@ -144,8 +148,9 @@ class App:
             self._auto_open_external()
 
         # Indépendant de la config OCR : le panneau se (re)connecte tout seul
-        # au lancement, puis retente en arrière-plan s'il est éteint/hors de portée.
-        if self.config.led_enabled:
+        # au lancement (Wi-Fi compris), puis retente en arrière-plan s'il est
+        # éteint/hors de portée (voir _led_watchdog).
+        if self._led_wanted:
             self.logger.info("Connexion automatique au panneau LED %s...", self.config.led_host)
             self._led_connect(self.config.led_host)
 
@@ -329,6 +334,7 @@ class App:
             alert_laps=self.config.led_alert_laps,
         ))
         self._refresh_led_status()
+        self._led_watchdog()
 
         status = self.health.status_for(self.tracker.state)
         self._apply_health_status(status)
@@ -363,6 +369,7 @@ class App:
         if current != self._last_led_status:
             self._last_led_status = current
             self.dev_window.set_led_status(*current)
+            self.dev_window.set_led_control(self._led_wanted, self.led.status)
 
     def _led_host_from_ui(self) -> str:
         """IP saisie dans la fenêtre dev ; champ vide -> hôte par défaut (remis dans le champ)."""
@@ -378,7 +385,7 @@ class App:
         if host != self.config.led_host:
             self.config.led_host = host
             self.config.save()
-            if self.config.led_enabled:
+            if self._led_wanted:
                 self.led.connect(host)  # nouvelle cible : le pilote se reconnecte dessus
         self.dev_window.set_led_scanning(True)
         self.dev_window.log("Test de connexion au panneau LED...")
@@ -404,18 +411,19 @@ class App:
         )
 
     def _led_toggle(self) -> None:
-        if self.config.led_enabled:
-            self.config.led_enabled = False
-            self.config.save()
+        """« Déconnecter » / « Connecter » : pour la session en cours seulement, le panneau
+        est de nouveau rejoint automatiquement au prochain lancement."""
+        if self._led_wanted:
+            self._led_wanted = False
             self.led.disconnect()
-            self.dev_window.set_led_enabled(False)
-            self.dev_window.log("Panneau LED déconnecté.")
+            self.dev_window.set_led_control(False, self.led.status)
+            self.dev_window.log("Panneau LED déconnecté (jusqu'au prochain lancement).")
             return
         host = self._led_host_from_ui()
         self.config.led_host = host
-        self.config.led_enabled = True
         self.config.save()
-        self.dev_window.set_led_enabled(True)
+        self._led_wanted = True
+        self.dev_window.set_led_control(True, self.led.status)
         self.dev_window.log(f"Connexion au panneau LED {host}...")
         self._led_connect(host)
 
@@ -426,28 +434,51 @@ class App:
             self.led.connect(host)
             return
         self.dev_window.log(f"Recherche du Wi-Fi {WIFI_SSID_PREFIX}… avant la connexion au panneau.")
-        threading.Thread(target=self._join_wifi_then_connect, daemon=True, name="led-wifi").start()
+        self._start_wifi_join(quiet=False)
 
-    def _join_wifi_then_connect(self) -> None:
+    def _led_watchdog(self) -> None:
+        """Tant que le panneau reste injoignable, retente le Wi-Fi « RHX8-… » (puis le
+        panneau) toutes les LED_WIFI_RETRY_S : panneau allumé après l'appli, Wi-Fi coupé..."""
+        if (not self._led_wanted or not self.config.led_wifi_autoconnect or self._wifi_joining
+                or self.led.status != LedStatus.RETRYING
+                or time.monotonic() - self._wifi_last_attempt < LED_WIFI_RETRY_S):
+            return
+        self._start_wifi_join(quiet=True)
+
+    def _start_wifi_join(self, quiet: bool) -> None:
+        self._wifi_joining = True
+        self._wifi_last_attempt = time.monotonic()
+        threading.Thread(target=self._join_wifi_then_connect, args=(quiet,), daemon=True, name="led-wifi").start()
+
+    def _join_wifi_then_connect(self, quiet: bool) -> None:
         before = wifi.current_ssid()
         if before is not None and before.startswith(WIFI_SSID_PREFIX):
-            message = f"Wi-Fi : déjà sur le réseau {before}."
+            # Déjà sur le bon réseau : rien à faire côté Wi-Fi ; c'est au pilote de
+            # retenter le TCP (la carte peut garder brièvement son ancienne connexion).
+            joined, message = False, None
         elif wifi.connect_to_prefix(WIFI_SSID_PREFIX):
-            message = f"Wi-Fi : réseau {wifi.current_ssid() or WIFI_SSID_PREFIX + '…'} rejoint."
+            joined, message = True, f"Wi-Fi : réseau {wifi.current_ssid() or WIFI_SSID_PREFIX + '…'} rejoint."
         else:
+            joined = False
             message = (
-                f"Wi-Fi : aucun réseau {WIFI_SSID_PREFIX}… rejoint (absent, ou jamais connecté à la main "
-                f"depuis ce PC), réseau actuel : {before or 'aucun'}. Connexion au panneau quand même."
+                f"Wi-Fi : aucun réseau {WIFI_SSID_PREFIX}… à portée (panneau éteint ?), réseau actuel : "
+                f"{before or 'aucun'}. Nouvel essai dans {LED_WIFI_RETRY_S} s."
             )
         try:
-            self.window.after(0, self._on_wifi_join_done, message)
+            self.window.after(0, self._on_wifi_join_done, message, joined, quiet)
         except (RuntimeError, TclError):  # appli fermée entre-temps
             pass
 
-    def _on_wifi_join_done(self, message: str) -> None:
-        self.dev_window.log(message)
-        self.logger.info(message)
-        if self.config.led_enabled:  # sauf « Déconnecter » cliqué pendant la recherche
+    def _on_wifi_join_done(self, message: Optional[str], joined: bool, quiet: bool) -> None:
+        self._wifi_joining = False
+        if message and (joined or not quiet):   # les échecs répétés du chien de garde ne remplissent pas le journal
+            self.dev_window.log(message)
+            self.logger.info(message)
+        elif message:
+            self.logger.debug(message)
+        # On (re)lance le TCP au démarrage/clic (not quiet) ou après un vrai rejoint Wi-Fi ;
+        # sinon (chien de garde, déjà sur le réseau) le pilote retente tout seul.
+        if self._led_wanted and (joined or not quiet):
             self.led.connect(self.config.led_host)
 
     def _led_set_color(self, rgb: tuple) -> None:
