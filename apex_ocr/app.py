@@ -13,7 +13,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from tkinter import filedialog, messagebox
+from tkinter import TclError, filedialog, messagebox
 from typing import Optional
 
 from PIL import Image
@@ -21,8 +21,11 @@ from PIL import Image
 from apex_ocr import capture
 from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthMonitor, HealthStatus
+from apex_ocr.led import wifi
 from apex_ocr.led.content import panel_content
 from apex_ocr.led.panel import LedPanel, LedStatus
+from apex_ocr.led.protocol import DEFAULT_HOST, WIFI_SSID_PREFIX
+from apex_ocr.led.rendering import color_index
 from apex_ocr.logging_setup import set_log_level, setup_logging
 from apex_ocr.ocr import engine
 from apex_ocr.ocr.calibration import calibrate_threshold
@@ -48,6 +51,9 @@ _REASON_LABELS = {
     StopReason.OCR_LOST: "signal perdu",
     StopReason.CANCELLED: "course annulée",
 }
+
+# Les 8 couleurs du panneau, indexées comme ``rendering.color_index`` (bits R, G, B).
+_LED_COLOR_NAMES = ("noir", "rouge", "vert", "jaune", "bleu", "magenta", "cyan", "blanc")
 
 
 class App:
@@ -76,6 +82,10 @@ class App:
             tuple(self.config.led_color),
             tuple(self.config.led_alert_color),
             self.logger,
+            password=self.config.led_password,
+            brightness=self.config.led_brightness,
+            show_laps=self.config.led_show_laps,
+            resync_minutes=self.config.led_resync_minutes,
         )
         self._last_led_status: Optional[tuple[LedStatus, str]] = None
 
@@ -99,6 +109,7 @@ class App:
             on_led_scan=self._led_scan,
             on_led_toggle=self._led_toggle,
             on_led_color=self._led_set_color,
+            on_led_brightness=self._led_set_brightness,
             on_led_alert_color=self._led_set_alert_color,
             on_led_alert_seconds=self._led_set_alert_seconds,
             on_led_alert_laps=self._led_set_alert_laps,
@@ -130,9 +141,9 @@ class App:
 
         # Indépendant de la config OCR : le panneau se (re)connecte tout seul
         # au lancement, puis retente en arrière-plan s'il est éteint/hors de portée.
-        if self.config.led_enabled and self.config.led_address:
-            self.logger.info("Connexion automatique au panneau LED %s...", self.config.led_address)
-            self.led.connect(self.config.led_address)
+        if self.config.led_enabled:
+            self.logger.info("Connexion automatique au panneau LED %s...", self.config.led_host)
+            self._led_connect(self.config.led_host)
 
     # ---- fenêtre dev -----------------------------------------------------
 
@@ -349,9 +360,24 @@ class App:
             self._last_led_status = current
             self.dev_window.set_led_status(*current)
 
+    def _led_host_from_ui(self) -> str:
+        """IP saisie dans la fenêtre dev ; champ vide -> hôte par défaut (remis dans le champ)."""
+        host = self.dev_window.led_host_input()
+        if not host:
+            host = DEFAULT_HOST
+            self.dev_window.set_led_host(host)
+        return host
+
     def _led_scan(self) -> None:
+        """« Tester » : le panneau répond-il sur le réseau ? (sonde TCP, sans changer l'état de connexion)."""
+        host = self._led_host_from_ui()
+        if host != self.config.led_host:
+            self.config.led_host = host
+            self.config.save()
+            if self.config.led_enabled:
+                self.led.connect(host)  # nouvelle cible : le pilote se reconnecte dessus
         self.dev_window.set_led_scanning(True)
-        self.dev_window.log("Scan des panneaux LED à proximité...")
+        self.dev_window.log("Test de connexion au panneau LED...")
         self.led.scan().add_done_callback(lambda fut: self.window.after(0, self._on_led_scan_done, fut))
 
     def _on_led_scan_done(self, fut) -> None:
@@ -359,12 +385,19 @@ class App:
         try:
             devices = fut.result()
         except Exception as exc:
-            self.dev_window.log(f"Scan LED impossible : {exc}")
+            self.dev_window.log(f"Test du panneau LED impossible : {exc}")
             return
-        self.config.led_known_devices = [list(d) for d in devices]
-        self.config.save()
-        self.dev_window.set_led_devices(devices, select_first=True)
-        self.dev_window.log(f"{len(devices)} panneau(x) LED trouvé(s).")
+        if devices:
+            self.dev_window.log(f"Panneau LED joignable ({devices[0][1]}).")
+            return
+        # scan() sonde l'hôte passé à connect(), ou l'hôte par défaut tant que
+        # le panneau n'est pas activé (statut DISABLED).
+        probed = self.config.led_host if self.led.status != LedStatus.DISABLED else DEFAULT_HOST
+        hint = f" L'IP saisie ({self.config.led_host}) sera utilisée à la connexion." if probed != self.config.led_host else ""
+        self.dev_window.log(
+            f"Panneau LED injoignable sur {probed} — vérifier le Wi-Fi {WIFI_SSID_PREFIX}… "
+            f"(le PC doit être sur le réseau du panneau).{hint}"
+        )
 
     def _led_toggle(self) -> None:
         if self.config.led_enabled:
@@ -374,22 +407,62 @@ class App:
             self.dev_window.set_led_enabled(False)
             self.dev_window.log("Panneau LED déconnecté.")
             return
-        address = self.dev_window.led_address_input()
-        if not address:
-            messagebox.showwarning("Attention", "Scannez ou saisissez l'adresse du panneau LED.")
-            return
-        self.config.led_address = address
+        host = self._led_host_from_ui()
+        self.config.led_host = host
         self.config.led_enabled = True
         self.config.save()
-        self.led.connect(address)
         self.dev_window.set_led_enabled(True)
-        self.dev_window.log(f"Connexion au panneau LED {address}...")
+        self.dev_window.log(f"Connexion au panneau LED {host}...")
+        self._led_connect(host)
+
+    def _led_connect(self, host: str) -> None:
+        """Demande la connexion au panneau ; avec ``led_wifi_autoconnect``, rejoint
+        d'abord le Wi-Fi « RHX8-… » (netsh : plusieurs secondes -> thread)."""
+        if not self.config.led_wifi_autoconnect:
+            self.led.connect(host)
+            return
+        self.dev_window.log(f"Recherche du Wi-Fi {WIFI_SSID_PREFIX}… avant la connexion au panneau.")
+        threading.Thread(target=self._join_wifi_then_connect, daemon=True, name="led-wifi").start()
+
+    def _join_wifi_then_connect(self) -> None:
+        before = wifi.current_ssid()
+        if before is not None and before.startswith(WIFI_SSID_PREFIX):
+            message = f"Wi-Fi : déjà sur le réseau {before}."
+        elif wifi.connect_to_prefix(WIFI_SSID_PREFIX):
+            message = f"Wi-Fi : réseau {wifi.current_ssid() or WIFI_SSID_PREFIX + '…'} rejoint."
+        else:
+            message = (
+                f"Wi-Fi : aucun réseau {WIFI_SSID_PREFIX}… rejoint (absent, ou jamais connecté à la main "
+                f"depuis ce PC), réseau actuel : {before or 'aucun'}. Connexion au panneau quand même."
+            )
+        try:
+            self.window.after(0, self._on_wifi_join_done, message)
+        except (RuntimeError, TclError):  # appli fermée entre-temps
+            pass
+
+    def _on_wifi_join_done(self, message: str) -> None:
+        self.dev_window.log(message)
+        self.logger.info(message)
+        if self.config.led_enabled:  # sauf « Déconnecter » cliqué pendant la recherche
+            self.led.connect(self.config.led_host)
 
     def _led_set_color(self, rgb: tuple) -> None:
         self.config.led_color = list(rgb)
         self.config.save()
         self.led.set_color(rgb)
-        self.dev_window.log("Couleur du panneau LED : #%02x%02x%02x" % tuple(rgb))
+        self.dev_window.log(
+            "Couleur du panneau LED : #%02x%02x%02x -> %s (8 couleurs disponibles)."
+            % (*tuple(rgb), _LED_COLOR_NAMES[color_index(rgb)])
+        )
+
+    def _led_set_brightness(self, level: int) -> None:
+        level = max(1, min(16, int(level)))
+        if level == self.config.led_brightness:
+            return
+        self.config.led_brightness = level
+        self.config.save()
+        self.led.set_brightness(level)
+        self.dev_window.log(f"Luminosité du panneau LED : {level}/16.")
 
     def _led_set_laps_only(self, enabled: bool) -> None:
         self.config.led_laps_only = enabled

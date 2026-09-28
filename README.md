@@ -15,7 +15,7 @@ Apex Timing ne propose ni API ni port local pour récupérer ces données. Cette
 - Conçu pour tourner en production toute la journée sans supervision : récupère sa configuration au démarrage, retente en arrière-plan si la fenêtre source n'est pas encore ouverte, et remonte un statut de santé dans la zone de notification (gris = attente, vert = course suivie, rouge = problème). Pas de notification Windows (trop intrusif), l'historique reste dans le log
 - Calibration automatique du seuil (bouton **Auto**) : teste plusieurs captures dans le temps sur une plage de seuils et retient le plus robuste
 - Habillage aux couleurs New Kart Poitiers (logo, palette rouge/noir) sur la fenêtre principale, l'icône et l'affichage externe
-- **Panneau LED Bluetooth** (iPixel Color 64×16, même panneau que [newkart-led-panel](https://github.com/Nistro-dev/newkart-led-panel)) : le minuteur (et les tours s'il y en a) s'affiche sur le panneau pendant la course, écran vide le reste du temps. Scan des panneaux à proximité, reconnexion automatique au lancement et en cas de coupure, luminosité toujours à 100 %, couleur du texte au choix
+- **Panneau LED Wi-Fi** (RHX8 64×16, 8 couleurs) : le minuteur (et les tours s'il y en a, désactivable via `led_show_laps`) s'affiche sur le panneau pendant la course ; hors course, le panneau montre l'**heure** (HH:MM, renvoyée à chaque changement de minute). Dans les dernières `led_alert_seconds` secondes ou `led_alert_laps` tours, le texte passe en **couleur d'alerte** (`led_alert_color`, pré-calculée dans les trames : pas de renvoi au passage du seuil) ; l'interrupteur **Tours seuls** (`led_laps_only`) n'affiche que le compteur de tours. Le décompte est envoyé **par tranches de 2 min** (`led_resync_minutes`) sous forme de programmes que le panneau joue tout seul (une trame par seconde, sans clignotement à l'intérieur d'une tranche ; bref clignotement au changement de tranche, le panneau repartant du début au bout de ~4 min) ; l'appli ne renvoie sinon quelque chose qu'en cas de resynchronisation, de changement de tours ou de chrono arrêté. Le PC se connecte au réseau Wi-Fi du panneau (`RHX8-…`, réseau ouvert), bouton **Tester** pour vérifier qu'il répond, reconnexion automatique au lancement et en cas de coupure, luminosité réglable (1 à 16), couleur du texte au choix (ramenée à l'une des 8 couleurs du panneau)
 - Écriture du timer courant dans `timer.txt` (lisible par une appli externe) et journal applicatif avec rotation quotidienne (rétention configurable)
 - `test_timer.html` : page web autonome simulant un chrono Apex Timing (avec ou sans tours) pour tester l'OCR sans l'application réelle
 
@@ -46,7 +46,7 @@ Calibration initiale (dans la fenêtre dev) :
 4. Cliquer **Auto** à côté du seuil pour calibrer automatiquement (ou ajuster manuellement si besoin)
 5. Cliquer **Affichage externe**, survoler la liste pour repérer l'écran (cadre rouge), choisir : ouverture directe en plein écran. L'écran choisi est mémorisé et se rouvre automatiquement aux lancements suivants. L'affichage externe est **désactivé par défaut** : activer l'interrupteur **Activé** à côté du bouton pour s'en servir. Désactivé, il se ferme et ne se rouvre plus au démarrage. Pour fermer : re-cliquer **Affichage externe** dans la fenêtre dev (le plus fiable), ou le petit ✕ discret en haut à droite de l'écran externe
 
-6. *(optionnel)* Panneau LED : allumer le panneau, cliquer **Scanner** dans la ligne « Panneau LED », choisir le panneau `LED_BLE_...` puis **Connecter** (l'écran du panneau est vidé). Le bouton **Couleur** change la couleur du texte. Le panneau est mémorisé : l'appli s'y reconnecte toute seule aux lancements suivants, et retente en arrière-plan s'il est éteint ou hors de portée
+6. *(optionnel)* Panneau LED : allumer le panneau, connecter le PC à son réseau Wi-Fi `RHX8-…` (réseau ouvert, sans mot de passe) depuis les paramètres Wi-Fi de Windows, laisser l'IP par défaut `192.168.47.1` dans le champ « Panneau LED (IP) » (ou saisir la bonne), cliquer **Tester** pour vérifier que le panneau répond, puis **Connecter** (l'écran du panneau est vidé). Le bouton **Couleur** change la couleur du texte (le panneau n'a que 8 couleurs, le bouton montre celle réellement affichée) et le curseur **Luminosité** règle l'intensité (1 à 16). Le mot de passe du panneau (`LED12345678` par défaut) se change dans `config.json` (`led_password`). L'appli se reconnecte toute seule aux lancements suivants et retente en arrière-plan si le panneau est éteint ou le Wi-Fi coupé ; avec `led_wifi_autoconnect: true` dans `config.json`, elle rejoint elle-même le réseau `RHX8-…` au lancement (via `netsh wlan`, à condition que Windows connaisse déjà ce réseau)
 
 Une fois fenêtre + zone configurées, l'OCR démarre automatiquement à chaque lancement, la fenêtre principale se réduit direct dans la zone de notification, et l'affichage externe se rouvre sur l'écran mémorisé — aucune action manuelle requise en usage normal. Utiliser **Quitter** dans le menu de l'icône systray pour arrêter complètement l'application.
 
@@ -58,7 +58,7 @@ Tout est stocké dans **`%LOCALAPPDATA%\ApexTimingOCR\`**, c'est-à-dire `C:\Use
 |---|---|
 | `logs\apex_ocr.log` | **Journal** du jour |
 | `logs\apex_ocr.log.AAAA-MM-JJ` | Journaux des jours précédents (un fichier par jour, conservés 30 jours) |
-| `config.json` | Configuration : fenêtre source, zone, seuil, écran externe, panneau LED (adresse, couleur) |
+| `config.json` | Configuration : fenêtre source, zone, seuil, écran externe, panneau LED (`led_host`, `led_password`, `led_brightness`, `led_show_laps`, `led_laps_only`, `led_resync_minutes`, `led_wifi_autoconnect`, couleurs `led_color`/`led_alert_color`, seuils `led_alert_seconds`/`led_alert_laps`), niveau de log |
 | `timer.txt` | Temps actuel, réécrit à chaque changement (lisible par une appli externe) |
 
 ### Ouvrir le journal
@@ -71,7 +71,7 @@ Le journal est horodaté (`date | niveau | message`) et contient :
 - chaque changement du timer pendant une course (`INFO | Timer 09:35 (3/20)`)
 - les fins de session et leur cause (temps écoulé, course annulée, signal perdu)
 - les incidents : `WARNING | Passage en état ERROR` (capture/OCR en échec), puis `Sortie de l'état ERROR` au retour à la normale
-- le panneau LED : connexion (`Panneau LED : CONNECTED`), reconnexions (`RETRYING` + raison) et envois échoués
+- le panneau LED : connexion (`Panneau LED : CONNECTED`), reconnexions (`RETRYING` + raison), programmes envoyés (`décompte envoyé depuis 09:57 (131 trames, suite dans 120 s, 0.7 s de transfert)`, `affiche 05:00 (fixe)`) et envois échoués
 - l'affichage externe : réouverture automatique au démarrage, ou écran introuvable
 
 Pour chercher uniquement les problèmes, filtrer les lignes qui contiennent `WARNING`.
@@ -114,10 +114,12 @@ apex_ocr/
     screen_picker.py          liste des écrans connectés (+ repère visuel au survol)
     external_display.py       affichage plein écran (piste)
   led/
-    panel.py                  connexion BLE au panneau LED (reconnexion auto, envoi de la dernière valeur)
+    panel.py                  pilotage Wi-Fi du panneau RHX8 (thread dédié : connexion, reconnexion auto, envoi du programme de décompte)
     content.py                ce que le panneau affiche selon l'état de la session (pure logique, testée)
-    rendering.py              rendu du texte en image 64×16
-    protocol.py               paquets BLE iPixel Color (repris de newkart-led-panel)
+    rendering.py              rendu 64×16 à 8 couleurs (chiffres 7 segments, tours) et construction du programme joué par le panneau
+    protocol.py               protocole TCP RHX8 (login RC5, luminosité, transfert de programme), fonctions pures testées
+    wifi.py                   rattachement optionnel au Wi-Fi « RHX8-… » via netsh (Windows, jamais bloquant pour l'UI)
+    rgb_template.bin          gabarit binaire du programme RHX8 (embarqué dans l'exe)
     tray.py                   icône systray multi-états
     branding.py               logo + palette New Kart Poitiers
     theme_newkart.json        thème CustomTkinter (rouge/noir, dérivé du logo)

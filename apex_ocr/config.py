@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
+from apex_ocr.led.protocol import DEFAULT_HOST, DEFAULT_PASSWORD
 from apex_ocr.paths import CONFIG_PATH
 
 _TESSERACT_SEARCH_PATHS = [
@@ -24,6 +25,17 @@ def find_tesseract() -> str:
     return ""
 
 
+def _looks_like_ipv4(value) -> bool:
+    """« a.b.c.d » (port optionnel « :n ») -> True ; adresse Bluetooth ou autre -> False."""
+    if not isinstance(value, str):
+        return False
+    host = value.strip()
+    if host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+    parts = host.split(".")
+    return len(parts) == 4 and all(p.isdigit() and int(p) <= 255 for p in parts)
+
+
 @dataclass
 class AppConfig:
     window_title: str = ""
@@ -38,11 +50,16 @@ class AppConfig:
     # Désactivé : l'affichage externe ne s'ouvre jamais (ni au démarrage, ni via le bouton).
     # Désactivé par défaut : à activer dans la fenêtre dev seulement s'il y a un écran piste.
     external_enabled: bool = False
-    # Panneau LED Bluetooth (iPixel Color, voir apex_ocr/led) : reconnexion
-    # automatique au lancement si led_enabled et une adresse est mémorisée.
-    led_address: str = ""
+    # Panneau LED Wi-Fi (RHX8 64×16 à 8 couleurs, voir apex_ocr/led) : le PC
+    # rejoint le réseau « RHX8-… » du panneau, l'appli s'y reconnecte toute
+    # seule au lancement si led_enabled (hôte « ip » ou « ip:port »).
     led_enabled: bool = False
-    led_known_devices: list[list[str]] = field(default_factory=list)  # [[nom, adresse], ...] du dernier scan
+    led_host: str = DEFAULT_HOST
+    led_password: str = DEFAULT_PASSWORD
+    led_brightness: int = 12  # 1..16
+    led_show_laps: bool = True  # afficher les tours à gauche du temps
+    led_resync_minutes: int = 2  # longueur des tranches du décompte (le panneau repart du début au bout de ~4 min) ; bref clignotement à chaque tranche
+    led_wifi_autoconnect: bool = False  # rejoindre le Wi-Fi RHX8-… automatiquement avant de se connecter (netsh, Windows)
     led_width: int = 64
     led_height: int = 16
     led_color: list[int] = field(default_factory=lambda: [0, 255, 0])
@@ -64,6 +81,11 @@ class AppConfig:
             for key, value in data.items():
                 if hasattr(cfg, key):
                     setattr(cfg, key, value)
+            # Ancienne config (panneau Bluetooth) : « led_address » n'existe plus.
+            # Une IP y a peut-être été saisie -> reprise comme hôte ; une adresse
+            # BLE (AA:BB:...) est ignorée.
+            if "led_host" not in data and _looks_like_ipv4(data.get("led_address")):
+                cfg.led_host = data["led_address"].strip()
         return cfg
 
     def save(self) -> None:
