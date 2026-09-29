@@ -34,7 +34,7 @@ HEARTBEAT_S = 4.0             # ping régulier : détecte un lien mort (Wi-Fi co
 HEARTBEAT_TIMEOUT_S = 3.0     # le ping n'attend pas 30 s si le panneau ne répond plus
 RETRY_MIN_S = 2.0
 RETRY_MAX_S = 5.0    # on retente souvent : après une coupure, la carte RHX8 garde son ancienne connexion un moment et il faut saisir le créneau dès qu'il se libère
-SHUTDOWN_TIMEOUT_S = 3.0
+SHUTDOWN_TIMEOUT_S = 8.0      # > battement de cœur (3 s) + envoi de l'écran noir : l'extinction doit aboutir
 RESYNC_TOLERANCE_S = 2         # écart toléré entre le temps demandé et la séquence en cours
 FROZEN_S = 2.5                 # valeur OCR inchangée depuis ce délai = chrono arrêté -> image fixe
 CLOCK_GRACE_S = 6.0            # pendant un décompte, un passage transitoire à l'horloge (trou de lecture OCR) est ignoré ce temps

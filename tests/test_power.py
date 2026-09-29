@@ -41,6 +41,22 @@ def test_session_lock_unlock():
     assert events == ["lock", "unlock"]
 
 
+def test_end_session_runs_callback_once_synchronously():
+    calls = []
+    m = power.PowerMonitor(post=lambda fn: None, on_endsession=lambda: calls.append(1))
+    assert m.end_session(power.WM_ENDSESSION, 0) is False        # wparam faux = session non terminée
+    assert m.end_session(power.WM_QUERYENDSESSION, 0) is True     # écran noir envoyé ici, en synchrone
+    assert m.end_session(power.WM_ENDSESSION, 1) is False         # déjà fait : pas deux fois
+    assert calls == [1]
+
+
+def test_end_session_callback_error_is_swallowed():
+    def boom():
+        raise RuntimeError("x")
+    m = power.PowerMonitor(post=lambda fn: None, on_endsession=boom)
+    assert m.end_session(power.WM_QUERYENDSESSION, 0) is True
+
+
 def test_post_failure_does_not_raise():
     def broken(fn):
         raise RuntimeError("main thread is not in main loop")

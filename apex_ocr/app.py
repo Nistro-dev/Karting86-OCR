@@ -160,6 +160,7 @@ class App:
             post=lambda fn: self.window.after(0, fn),
             on_suspend=self._on_suspend,
             on_resume=self._on_resume,
+            on_endsession=self._on_endsession,   # arrêt du PC : écran noir envoyé avant d'être tué
         )
         self.power.start()
 
@@ -832,6 +833,14 @@ class App:
         self.logger.info("Reprise après veille.")
         if self._led_wanted:
             self._led_connect(self.config.led_host)
+
+    def _on_endsession(self) -> None:
+        """Arrêt / redémarrage / fermeture de session Windows : appelé en synchrone dans
+        le thread du moniteur ; Windows attend notre retour (quelques secondes) puis tue
+        le processus. On éteint le panneau et on ferme proprement la connexion (sinon il
+        resterait sur l'heure ou le dernier décompte, et garderait une connexion zombie)."""
+        self.logger.info("Fin de session Windows : extinction du panneau LED.")
+        self.led.shutdown()
 
     def _really_quit(self) -> None:
         self.running = False

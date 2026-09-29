@@ -17,6 +17,8 @@ from typing import Callable, Optional
 WM_POWERBROADCAST = 0x0218
 WM_WTSSESSION_CHANGE = 0x02B1
 WM_CLOSE = 0x0010
+WM_QUERYENDSESSION = 0x0011   # arrêt / redémarrage / fermeture de session Windows
+WM_ENDSESSION = 0x0016
 
 PBT_APMSUSPEND = 0x0004
 PBT_APMRESUMESUSPEND = 0x0007
@@ -37,9 +39,15 @@ class PowerMonitor:
                  on_suspend: Optional[Callable[[], None]] = None,
                  on_resume: Optional[Callable[[], None]] = None,
                  on_lock: Optional[Callable[[], None]] = None,
-                 on_unlock: Optional[Callable[[], None]] = None):
+                 on_unlock: Optional[Callable[[], None]] = None,
+                 on_endsession: Optional[Callable[[], None]] = None):
         self._post = post
         self._callbacks = {"suspend": on_suspend, "resume": on_resume, "lock": on_lock, "unlock": on_unlock}
+        # Fin de session (arrêt du PC…) : Windows attend le retour du message puis tue
+        # le processus. Ce callback est donc appelé EN SYNCHRONE dans le thread du
+        # moniteur (pas via ``post`` : le thread Tk n'aurait plus le temps de tourner).
+        self._on_endsession = on_endsession
+        self._endsession_done = False
         self._suspended = False
         self._hwnd: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
@@ -70,6 +78,20 @@ class PowerMonitor:
                 pass
         return event
 
+    def end_session(self, msg: int, wparam: int) -> bool:
+        """Fin de session Windows (``WM_QUERYENDSESSION``, ou ``WM_ENDSESSION`` avec
+        wparam vrai) : exécute ``on_endsession`` une seule fois, en synchrone.
+        Renvoie True si le callback a été appelé."""
+        if msg == WM_QUERYENDSESSION or (msg == WM_ENDSESSION and wparam):
+            if not self._endsession_done and self._on_endsession is not None:
+                self._endsession_done = True
+                try:
+                    self._on_endsession()
+                except Exception as exc:
+                    _log.warning("Fermeture à la fin de session : %s", exc)
+                return True
+        return False
+
     # ---- fenêtre cachée Windows ----------------------------------------------
 
     def start(self) -> None:
@@ -97,6 +119,9 @@ class PowerMonitor:
                 if msg in (WM_POWERBROADCAST, WM_WTSSESSION_CHANGE):
                     self.dispatch(msg, wparam)
                     return 1 if msg == WM_POWERBROADCAST else 0
+                if msg in (WM_QUERYENDSESSION, WM_ENDSESSION):
+                    self.end_session(msg, wparam)   # synchrone : écran noir avant que Windows nous tue
+                    return 1 if msg == WM_QUERYENDSESSION else 0
                 if msg == WM_CLOSE:
                     win32gui.DestroyWindow(hwnd)
                     return 0
