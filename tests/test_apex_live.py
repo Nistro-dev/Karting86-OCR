@@ -56,6 +56,8 @@ def test_remaining_matches_gokarts_display_rounded_up():
     r = make_reading(RUNNING, now, None)
     assert (r.time_text, r.laps_done, r.laps_total, r.paused) == ("08:15", None, None, False)
     assert abs(r.remaining_s - 494.46) < 1e-6
+    early = make_reading(RUNNING, START - int(0.4 * US), None)   # départ horodaté après l'horloge PC
+    assert early.time_text == "10:00" and early.remaining_s == 600.0
 
 
 def test_pause_freezes_then_resume_accounts_for_accumulated_pause():

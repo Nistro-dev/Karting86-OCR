@@ -150,7 +150,9 @@ def format_remaining(us: int, with_hours: bool) -> str:
 
 
 def make_reading(row: SessionRow, now_us: int, laps_done: Optional[int], accum_pause_us: int = 0) -> LiveReading:
-    rem = remaining_us(row, now_us, accum_pause_us)
+    # Jamais plus que la durée : GoKarts peut horodater le départ quelques dixièmes après
+    # l'horloge du PC, ce qui afficherait « 10:01 » une fraction de seconde sur une session de 10:00.
+    rem = min(remaining_us(row, now_us, accum_pause_us), row.duration_us)
     with_hours = row.duration_us >= 3600 * US
     has_laps = row.laps_total > 0
     return LiveReading(

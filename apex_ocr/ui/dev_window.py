@@ -41,6 +41,9 @@ class DevWindowCallbacks:
     on_led_toggle: Callable[[], None]
     on_led_color: Callable[[tuple], None]
     on_led_brightness: Callable[[int], None]
+    on_led_warn_color: Callable[[tuple], None]
+    on_led_warn_seconds: Callable[[int], None]
+    on_led_warn_laps: Callable[[int], None]
     on_led_alert_color: Callable[[tuple], None]
     on_led_alert_seconds: Callable[[int], None]
     on_led_alert_laps: Callable[[int], None]
@@ -268,28 +271,46 @@ class DevWindow(ctk.CTkToplevel):
                  "début au bout de ~4 min : un bref clignotement à chaque changement de tranche est inévitable.",
         ).pack(fill="x", padx=(12 + label_w, 12), pady=(0, 4))
 
-        row = ctk.CTkFrame(disp_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Alerte :", width=label_w, anchor="w").pack(side="left")
-        ctk.CTkLabel(row, text="Couleur :").pack(side="left")
+        self._led_warn_color_hex = COLOR_HEX[color_index(config.led_warn_color)]
         self._led_alert_color_hex = COLOR_HEX[color_index(config.led_alert_color)]
-        self.led_alert_color_btn = ctk.CTkButton(
-            row, text="", width=60, fg_color=self._led_alert_color_hex, hover_color=self._led_alert_color_hex,
-            border_width=1, border_color=branding.STATUS_GREY, command=self._on_pick_led_alert_color,
-        )
-        self.led_alert_color_btn.pack(side="left", padx=6)
-        ctk.CTkLabel(row, text="Dernières").pack(side="left", padx=(6, 2))
-        self.led_alert_seconds_var = tk.StringVar(value=str(config.led_alert_seconds))
-        self._numeric_entry(row, self.led_alert_seconds_var, 50, ALERT_SECONDS_MIN, ALERT_SECONDS_MAX, "Alerte (secondes)",
-                            lambda: self._cb.on_led_alert_seconds(int(self.led_alert_seconds_var.get()))).pack(side="left")
-        ctk.CTkLabel(row, text="s  /").pack(side="left", padx=(2, 8))
-        self.led_alert_laps_var = tk.StringVar(value=str(config.led_alert_laps))
-        self._numeric_entry(row, self.led_alert_laps_var, 40, ALERT_LAPS_MIN, ALERT_LAPS_MAX, "Alerte (tours)",
-                            lambda: self._cb.on_led_alert_laps(int(self.led_alert_laps_var.get()))).pack(side="left")
-        ctk.CTkLabel(row, text="derniers tours").pack(side="left", padx=(2, 0))
+        self.led_warn_color_btn, self.led_warn_seconds_var, self.led_warn_laps_var = self._build_threshold_row(
+            disp_frame, pad, label_w, "Avertissement :", self._led_warn_color_hex, self._on_pick_led_warn_color,
+            config.led_warn_seconds, config.led_warn_laps, "Avertissement",
+            lambda: self._cb.on_led_warn_seconds(int(self.led_warn_seconds_var.get())),
+            lambda: self._cb.on_led_warn_laps(int(self.led_warn_laps_var.get())))
+        self.led_alert_color_btn, self.led_alert_seconds_var, self.led_alert_laps_var = self._build_threshold_row(
+            disp_frame, pad, label_w, "Alerte :", self._led_alert_color_hex, self._on_pick_led_alert_color,
+            config.led_alert_seconds, config.led_alert_laps, "Alerte",
+            lambda: self._cb.on_led_alert_seconds(int(self.led_alert_seconds_var.get())),
+            lambda: self._cb.on_led_alert_laps(int(self.led_alert_laps_var.get())))
+        ctk.CTkLabel(
+            disp_frame, anchor="w", justify="left", wraplength=660, text_color=branding.ACCENT_GREY,
+            text="À l'approche de la fin (temps ou tours), le texte passe d'abord en couleur d'avertissement, "
+                 "puis en couleur d'alerte.",
+        ).pack(fill="x", padx=(12 + label_w, 12), pady=(0, 4))
         self.led_alert_warn_lbl = ctk.CTkLabel(disp_frame, text="", text_color=branding.STATUS_AMBER, anchor="w")
         self.led_alert_warn_lbl.pack(fill="x", padx=12, pady=(0, 6))
         self._check_alert_color_visible()
+
+    def _build_threshold_row(self, parent, pad, label_w, label, color_hex, pick_cmd, seconds, laps, name,
+                             on_seconds, on_laps):
+        """Ligne « Couleur [■] Dernières [N] s / [M] derniers tours » d'un palier."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", **pad)
+        ctk.CTkLabel(row, text=label, width=label_w, anchor="w").pack(side="left")
+        ctk.CTkLabel(row, text="Couleur :").pack(side="left")
+        btn = ctk.CTkButton(row, text="", width=60, fg_color=color_hex, hover_color=color_hex,
+                            border_width=1, border_color=branding.STATUS_GREY, command=pick_cmd)
+        btn.pack(side="left", padx=6)
+        ctk.CTkLabel(row, text="Dernières").pack(side="left", padx=(6, 2))
+        seconds_var = tk.StringVar(value=str(seconds))
+        self._numeric_entry(row, seconds_var, 50, ALERT_SECONDS_MIN, ALERT_SECONDS_MAX, f"{name} (secondes)",
+                            on_seconds).pack(side="left")
+        ctk.CTkLabel(row, text="s  /").pack(side="left", padx=(2, 8))
+        laps_var = tk.StringVar(value=str(laps))
+        self._numeric_entry(row, laps_var, 40, ALERT_LAPS_MIN, ALERT_LAPS_MAX, f"{name} (tours)", on_laps).pack(side="left")
+        ctk.CTkLabel(row, text="derniers tours").pack(side="left", padx=(2, 0))
+        return btn, seconds_var, laps_var
 
     # -- onglet Diagnostics -----------------------------------------------------
 
@@ -385,6 +406,16 @@ class DevWindow(ctk.CTkToplevel):
         self._check_alert_color_visible()
         self._cb.on_led_color(rgb)
 
+    def _on_pick_led_warn_color(self) -> None:
+        rgb, _ = colorchooser.askcolor(color=self._led_warn_color_hex, parent=self, title="Couleur d'avertissement LED")
+        if rgb is None:
+            return
+        rgb = tuple(int(c) for c in rgb)
+        self._led_warn_color_hex = COLOR_HEX[color_index(rgb)]
+        self.led_warn_color_btn.configure(fg_color=self._led_warn_color_hex, hover_color=self._led_warn_color_hex)
+        self._check_alert_color_visible()
+        self._cb.on_led_warn_color(rgb)
+
     def _on_pick_led_alert_color(self) -> None:
         rgb, _ = colorchooser.askcolor(color=self._led_alert_color_hex, parent=self, title="Couleur d'alerte LED")
         if rgb is None:
@@ -396,10 +427,12 @@ class DevWindow(ctk.CTkToplevel):
         self._cb.on_led_alert_color(rgb)
 
     def _check_alert_color_visible(self) -> None:
-        """Texte et alerte ramenés à la même des 8 couleurs = alerte invisible : prévenir."""
-        same = self._led_color_hex == self._led_alert_color_hex
+        """Deux paliers ramenés à la même des 8 couleurs = palier invisible : prévenir."""
+        hexes = (self._led_color_hex, self._led_warn_color_hex, self._led_alert_color_hex)
+        same = len(set(hexes)) < 3
         self.led_alert_warn_lbl.configure(
-            text="⚠ La couleur d'alerte est identique à celle du texte sur le panneau : l'alerte ne se verra pas."
+            text="⚠ Deux des trois couleurs (texte, avertissement, alerte) sont identiques sur le panneau : "
+                 "un des paliers ne se verra pas."
             if same else ""
         )
 

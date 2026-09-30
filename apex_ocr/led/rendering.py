@@ -270,18 +270,24 @@ class TimerRenderer:
         return fr
 
     def countdown(self, time_text: str, laps_text: Optional[str] = None, max_frames: int = MAX_FRAMES,
-                  alert_below: Optional[int] = None, alert_color: Optional[int] = None) -> list[Frame]:
+                  alert_below: Optional[int] = None, alert_color: Optional[int] = None,
+                  warn_below: Optional[int] = None, warn_color: Optional[int] = None) -> list[Frame]:
         """Trames de ``time_text`` vers zéro (1 trame / seconde), au plus ``max_frames`` ; les trames
-        à ``alert_below`` secondes ou moins sont rendues en ``alert_color``."""
+        à ``alert_below`` secondes ou moins sont rendues en ``alert_color``, celles à ``warn_below``
+        ou moins en ``warn_color`` (l'alerte l'emporte)."""
         secs = parse_seconds(time_text)
         if secs is None:
             return [self.render(time_text, laps_text)]
         stop = max(-1, secs - max_frames)
         base = self.color
-        return [self.render(format_like(s, time_text), laps_text,
-                            alert_color if alert_below is not None and alert_color is not None
-                            and s <= alert_below else base)
-                for s in range(secs, stop, -1)]
+
+        def color_for(s: int) -> int:
+            if alert_below is not None and alert_color is not None and s <= alert_below:
+                return alert_color
+            if warn_below is not None and warn_color is not None and s <= warn_below:
+                return warn_color
+            return base
+        return [self.render(format_like(s, time_text), laps_text, color_for(s)) for s in range(secs, stop, -1)]
 
 
 def blank_frame() -> Frame:

@@ -12,7 +12,7 @@ from apex_ocr.led import panel as panel_mod
 from apex_ocr.led import protocol
 from apex_ocr.led.content import PanelContent, panel_content, trim_zero_hours
 from apex_ocr.led.panel import LedPanel, LedStatus
-from apex_ocr.led.rendering import (BLUE, GREEN, RED, WHITE, Frame, TimerRenderer, build_program, color_index,
+from apex_ocr.led.rendering import (BLUE, CYAN, GREEN, RED, WHITE, YELLOW, Frame, TimerRenderer, build_program, color_index,
                                     format_like, parse_seconds, program_length, program_size)
 from apex_ocr.session import DisplayValue, SessionState
 
@@ -38,12 +38,12 @@ def test_content_clock_after_session_ends():
 
 def test_content_time_only():
     value = DisplayValue("09:58", None, None, is_live=True)
-    assert panel_content(SessionState.RUNNING, value) == PanelContent("09:58", None, alert_below=60)
+    assert panel_content(SessionState.RUNNING, value) == PanelContent("09:58", None, warn_below=60, alert_below=30)
 
 
 def test_content_time_and_laps_padded():
     value = DisplayValue("09:58", 3, 20, is_live=True)
-    assert panel_content(SessionState.RUNNING, value) == PanelContent("09:58", "03/20", alert_below=60)
+    assert panel_content(SessionState.RUNNING, value) == PanelContent("09:58", "03/20", warn_below=60, alert_below=30)
 
 
 def test_content_laps_three_digits():
@@ -73,12 +73,21 @@ def test_content_laps_only_is_static_text():
     assert panel_content(SessionState.RUNNING, DisplayValue("09:58", None, None, True), laps_only=True).time_text == "09:58"
 
 
-def test_content_alert_on_time_or_laps():
-    assert not panel_content(SessionState.RUNNING, DisplayValue("01:01", None, None, True)).alert
-    assert panel_content(SessionState.RUNNING, DisplayValue("01:00", None, None, True)).alert
-    assert panel_content(SessionState.RUNNING, DisplayValue("09:58", 15, 20, True)).alert          # 5 tours restants
-    assert not panel_content(SessionState.RUNNING, DisplayValue("09:58", 14, 20, True)).alert
-    assert panel_content(SessionState.RUNNING, DisplayValue("02:00", None, None, True), alert_seconds=120).alert_below == 120
+def test_content_alert_levels_on_time_or_laps():
+    def level(display, **kw):
+        return panel_content(SessionState.RUNNING, display, **kw).level
+    assert level(DisplayValue("01:01", None, None, True)) == 0
+    assert level(DisplayValue("01:00", None, None, True)) == 1          # jaune sous 1 min
+    assert level(DisplayValue("00:31", None, None, True)) == 1
+    assert level(DisplayValue("00:30", None, None, True)) == 2          # rouge sous 30 s
+    assert level(DisplayValue("09:58", 14, 20, True)) == 0
+    assert level(DisplayValue("09:58", 15, 20, True)) == 1              # 5 tours restants : jaune
+    assert level(DisplayValue("09:58", 18, 20, True)) == 2              # 2 tours restants : rouge
+    assert level(DisplayValue("00:20", 14, 20, True)) == 2              # le pire des deux l'emporte
+    assert level(DisplayValue("00:45", 18, 20, True)) == 2
+    c = panel_content(SessionState.RUNNING, DisplayValue("02:00", None, None, True), warn_seconds=120, alert_seconds=45)
+    assert (c.level, c.warn_below, c.alert_below, c.warn, c.alert) == (1, 120, 45, True, False)
+    assert panel_content(SessionState.RUNNING, DisplayValue("00:10", 3, 20, True), laps_only=True) == PanelContent("03/20", level=2)
 
 
 # ---- protocole -----------------------------------------------------------
@@ -460,24 +469,34 @@ def test_alert_frames_are_precolored(led, fake, monkeypatch):
     monkeypatch.setattr(panel_mod, "RESYNC_TOLERANCE_S", 5)    # le test saute des secondes sans attendre
     led.connect("192.168.47.1")
     wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
-    led.show(PanelContent("00:05", alert_below=2))
+    led.show(PanelContent("00:05", warn_below=4, alert_below=2))
     wait_until(lambda: len(fake.uploads) == 2)
     frames = fake.last_frames
-    assert [colors_of(f) for f in frames] == [{RED}] * 3 + [{BLUE}] * 3      # 00:02, 00:01, 00:00 en alerte
-    led.show(PanelContent("00:04", alert_below=2))
-    led.show(PanelContent("00:02", alert=True, alert_below=2))                 # prévu dans les trames
+    # 00:05 normal, 00:04-00:03 en avertissement (jaune par défaut), 00:02-00:00 en alerte
+    assert [colors_of(f) for f in frames] == [{RED}] + [{YELLOW}] * 2 + [{BLUE}] * 3
+    led.show(PanelContent("00:04", level=1, warn_below=4, alert_below=2))     # prévu dans les trames
+    led.show(PanelContent("00:02", level=2, warn_below=4, alert_below=2))
     time.sleep(0.2)
     assert len(fake.uploads) == 2
+    led.set_warn_color((0, 255, 255))                                          # nouvelle couleur : renvoi du contenu courant (00:02, alerte)
+    wait_until(lambda: len(fake.uploads) == 3)
+    assert all(colors_of(f) == {BLUE} for f in fake.last_frames)
+    led.show(PanelContent("00:04", level=1, warn_below=4, alert_below=2))     # remontée du chrono : nouveau décompte, jaune en cyan
+    wait_until(lambda: len(fake.uploads) == 4)
+    assert [colors_of(f) for f in fake.last_frames] == [{CYAN}] * 2 + [{BLUE}] * 3
 
 
 def test_alert_from_laps_recolors_everything(led, fake):
     led.connect("192.168.47.1")
     wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
-    led.show(PanelContent("00:09", "15/20", alert=True, alert_below=2))
+    led.show(PanelContent("00:09", "15/20", level=1, warn_below=4, alert_below=2))   # avertissement par les tours
     wait_until(lambda: len(fake.uploads) == 2)
+    assert [colors_of(f) for f in fake.last_frames] == [{YELLOW}] * 7 + [{BLUE}] * 3  # tout jaune, rouge au seuil de temps
+    led.show(PanelContent("00:09", "18/20", level=2, warn_below=4, alert_below=2))   # alerte par les tours
+    wait_until(lambda: len(fake.uploads) == 3)
     assert all(colors_of(f) == {BLUE} for f in fake.last_frames)
     led.set_alert_color((40, 220, 90))
-    wait_until(lambda: len(fake.uploads) == 3)
+    wait_until(lambda: len(fake.uploads) == 4)
     assert all(colors_of(f) == {GREEN} for f in fake.last_frames)
 
 
