@@ -1,3 +1,3 @@
-"""Apex Timing OCR - extraction du timer/compteur de tours d'Apex Timing par OCR."""
+"""New Kart - Panneau led : chrono d'Apex Timing (base GoKarts) sur le panneau LED de bord de piste."""
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"

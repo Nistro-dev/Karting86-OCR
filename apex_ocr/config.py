@@ -49,9 +49,13 @@ class AppConfig:
     led_width: int = 64
     led_height: int = 16
     led_color: list[int] = field(default_factory=lambda: [0, 255, 0])
+    # Deux paliers à l'approche de la fin : avertissement (jaune) puis alerte (rouge), sur le temps ou les tours.
+    led_warn_color: list[int] = field(default_factory=lambda: [255, 255, 0])
+    led_warn_seconds: int = 60
+    led_warn_laps: int = 5
     led_alert_color: list[int] = field(default_factory=lambda: [255, 0, 0])
-    led_alert_seconds: int = 60
-    led_alert_laps: int = 5
+    led_alert_seconds: int = 30
+    led_alert_laps: int = 2
     led_laps_only: bool = False
     led_idle_clock: bool = True  # hors course : afficher l'heure (sinon écran noir)
     led_rotate_180: bool = False  # panneau monté tête en bas : toute l'image est tournée de 180°
@@ -78,6 +82,14 @@ class AppConfig:
                     setattr(cfg, key, value)
             if "led_host" not in data and _looks_like_ipv4(data.get("led_address")):
                 cfg.led_host = data["led_address"].strip()
+            # Config < 3.1 (un seul palier, rouge) : son seuil devient le palier jaune, le rouge
+            # prend la nouvelle valeur par défaut (sans jamais dépasser le jaune).
+            if "led_warn_seconds" not in data and "led_alert_seconds" in data:
+                cfg.led_warn_seconds = int(data["led_alert_seconds"])
+                cfg.led_alert_seconds = min(cls.led_alert_seconds, cfg.led_warn_seconds)
+            if "led_warn_laps" not in data and "led_alert_laps" in data:
+                cfg.led_warn_laps = int(data["led_alert_laps"])
+                cfg.led_alert_laps = min(cls.led_alert_laps, cfg.led_warn_laps)
         return cfg
 
     @property

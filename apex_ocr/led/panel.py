@@ -60,10 +60,12 @@ class _Sequence:
     suivante est à envoyer ``renew_at`` secondes après ``t0`` (None = dernière tranche)."""
 
     def __init__(self, secs0: int, t0: float, n: int, template: str, laps: Optional[str],
-                 renew_at: Optional[float] = None, alert_below: Optional[int] = None):
+                 renew_at: Optional[float] = None, alert_below: Optional[int] = None,
+                 warn_below: Optional[int] = None):
         self.secs0, self.t0, self.n, self.template, self.laps = secs0, t0, n, template, laps
         self.renew_at = renew_at
         self.alert_below = alert_below   # les trames à ce nombre de secondes ou moins sont en couleur d'alerte
+        self.warn_below = warn_below     # idem, couleur d'avertissement
 
     def elapsed(self) -> float:
         return time.monotonic() - self.t0
@@ -75,8 +77,13 @@ class _Sequence:
     def expected(self) -> int:
         return self.secs0 if self.static else max(0, self.secs0 - int(self.elapsed()))
 
-    def alert_at(self, secs: int) -> bool:
-        return self.alert_below is not None and secs <= self.alert_below
+    def level_at(self, secs: int) -> int:
+        """Palier (0/1/2) prévu dans les trames pour ``secs`` secondes restantes."""
+        if self.alert_below is not None and secs <= self.alert_below:
+            return 2
+        if self.warn_below is not None and secs <= self.warn_below:
+            return 1
+        return 0
 
     def exhausted(self) -> bool:
         return self.renew_at is not None and self.elapsed() >= self.renew_at
@@ -86,9 +93,10 @@ class LedPanel:
     def __init__(self, width: int, height: int, rgb: tuple, alert_rgb: tuple, logger: logging.Logger, *,
                  password: str = protocol.DEFAULT_PASSWORD, brightness: int = 12,
                  show_laps: bool = True, resync_minutes: int = DEFAULT_CHUNK_MIN,
-                 rotate_180: bool = False):
+                 rotate_180: bool = False, warn_rgb: tuple = (255, 255, 0)):
         self._renderer = TimerRenderer(width, height, rgb, rotate_180=rotate_180)
         self._alert_rgb = tuple(alert_rgb)
+        self._warn_rgb = tuple(warn_rgb)
         self._logger = logger
         self._password = password
         self._brightness = max(1, min(16, int(brightness)))
@@ -157,6 +165,13 @@ class LedPanel:
     def set_alert_color(self, rgb: tuple) -> None:
         with self._lock:
             self._alert_rgb = tuple(rgb)
+            self._sent = _UNSENT
+            self._wake = True
+            self._lock.notify()
+
+    def set_warn_color(self, rgb: tuple) -> None:
+        with self._lock:
+            self._warn_rgb = tuple(rgb)
             self._sent = _UNSENT
             self._wake = True
             self._lock.notify()
@@ -331,13 +346,13 @@ class LedPanel:
         if want is None or target.time_text.count(":") != seq.template.count(":"):
             return True
         if seq.static:
-            return want != seq.secs0 or target.alert != sent.alert   # le chrono repart / alerte -> renvoyer
+            return want != seq.secs0 or target.level != sent.level   # le chrono repart / palier -> renvoyer
         if self._frozen():
             return True                              # le chrono s'est arrêté -> image fixe
         if abs(want - seq.expected()) > RESYNC_TOLERANCE_S:
             return True
-        if target.alert != seq.alert_at(want):
-            return True                              # alerte pas prévue dans les trames (tours, seuil modifié)
+        if target.level != seq.level_at(want):
+            return True                              # palier pas prévu dans les trames (tours, seuil modifié)
         return seq.exhausted()                       # tranche finie -> envoyer la suivante
 
     # ---- I/O ----------------------------------------------------------------
@@ -391,9 +406,9 @@ class LedPanel:
             return
         laps = content.laps_text if self._show_laps else None
         secs = parse_seconds(content.time_text)
-        alert_color = color_index(self._alert_rgb)
+        alert_color, warn_color = color_index(self._alert_rgb), color_index(self._warn_rgb)
         if secs is None or secs == 0 or content.clock or self._frozen():
-            color = alert_color if content.alert else None
+            color = alert_color if content.alert else warn_color if content.warn else None
             self._upload([self._renderer.render(content.time_text, laps, color)])
             self._sent = content
             self._seq = None if secs is None else _Sequence(secs, time.monotonic(), 1, content.time_text, laps)
@@ -404,9 +419,17 @@ class LedPanel:
         delay = round(program_size(min(secs, span) + 1) / self._upload_rate + UPLOAD_OVERHEAD_S)
         start = max(0, secs - delay)
         last = start <= span
-        alert_below = start if content.alert else content.alert_below   # déjà en alerte : toutes les trames
+        # Déjà en alerte (tours) : toutes les trames en rouge ; déjà en avertissement : toutes au moins en
+        # jaune, le rouge restant prévu au seuil de temps ; sinon les deux seuils de temps s'appliquent.
+        if content.alert:
+            alert_below, warn_below = start, None
+        elif content.warn:
+            alert_below, warn_below = content.alert_below, start
+        else:
+            alert_below, warn_below = content.alert_below, content.warn_below
         frames = self._renderer.countdown(format_like(start, content.time_text), laps, max_frames=span + 1,
-                                          alert_below=alert_below, alert_color=alert_color)
+                                          alert_below=alert_below, alert_color=alert_color,
+                                          warn_below=warn_below, warn_color=warn_color)
         t = time.monotonic()
         size = self._upload(frames)
         t0 = time.monotonic()
@@ -414,7 +437,7 @@ class LedPanel:
             self._upload_rate = size / (t0 - t)
         self._sent = content
         self._seq = _Sequence(start, t0, len(frames), content.time_text, laps,
-                              None if last else self._chunk_s, alert_below)
+                              None if last else self._chunk_s, alert_below, warn_below)
         self._logger.info("Panneau LED : décompte envoyé depuis %s (%d trames%s, %.1f s de transfert)",
                           format_like(start, content.time_text), len(frames),
                           "" if last else ", suite dans %d s" % self._chunk_s, t0 - t)

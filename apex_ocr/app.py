@@ -84,6 +84,7 @@ class App:
             show_laps=self.config.led_show_laps,
             resync_minutes=self.config.led_resync_minutes,
             rotate_180=self.config.led_rotate_180,
+            warn_rgb=tuple(self.config.led_warn_color),
         )
         self._last_led_status: Optional[tuple[LedStatus, str]] = None
         self._led_wanted = self.config.led_enabled   # « Déconnecter » ne vaut que pour la session
@@ -111,6 +112,9 @@ class App:
             on_led_toggle=self._led_toggle,
             on_led_color=self._led_set_color,
             on_led_brightness=self._led_set_brightness,
+            on_led_warn_color=self._led_set_warn_color,
+            on_led_warn_seconds=self._led_set_warn_seconds,
+            on_led_warn_laps=self._led_set_warn_laps,
             on_led_alert_color=self._led_set_alert_color,
             on_led_alert_seconds=self._led_set_alert_seconds,
             on_led_alert_laps=self._led_set_alert_laps,
@@ -370,7 +374,9 @@ class App:
         self.led.show(panel_content(
             self.tracker.state, display,
             laps_only=self.config.led_laps_only,
+            warn_seconds=self.config.led_warn_seconds,
             alert_seconds=self.config.led_alert_seconds,
+            warn_laps=self.config.led_warn_laps,
             alert_laps=self.config.led_alert_laps,
             idle_clock=self.config.led_idle_clock,
         ))
@@ -542,6 +548,22 @@ class App:
         self.config.led_laps_only = enabled
         self.config.save()
         self.dev_window.log("Panneau LED : " + ("tours seuls" if enabled else "chrono + tours"))
+
+    def _led_set_warn_color(self, rgb: tuple) -> None:
+        self.config.led_warn_color = list(rgb)
+        self.config.save()
+        self.led.set_warn_color(rgb)
+        self.dev_window.log("Couleur d'avertissement LED : #%02x%02x%02x" % tuple(rgb))
+
+    def _led_set_warn_seconds(self, seconds: int) -> None:
+        self.config.led_warn_seconds = seconds
+        self.config.save()
+        self.dev_window.log(f"Avertissement LED : {seconds} dernières secondes.")
+
+    def _led_set_warn_laps(self, laps: int) -> None:
+        self.config.led_warn_laps = laps
+        self.config.save()
+        self.dev_window.log(f"Avertissement LED : {laps} derniers tours.")
 
     def _led_set_alert_color(self, rgb: tuple) -> None:
         self.config.led_alert_color = list(rgb)

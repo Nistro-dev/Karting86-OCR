@@ -46,6 +46,19 @@ def test_legacy_config_is_reused_when_new_one_is_missing(tmp_path, monkeypatch):
     assert AppConfig.load().led_brightness == 9
 
 
+def test_single_threshold_config_becomes_two_levels(tmp_path, monkeypatch):
+    """Config < 3.1 : « rouge à 60 s / 5 tours » devient « jaune à 60 s / 5 tours, rouge à 30 s / 2 tours »."""
+    _write(tmp_path, monkeypatch, {"led_alert_seconds": 60, "led_alert_laps": 5})
+    cfg = AppConfig.load()
+    assert (cfg.led_warn_seconds, cfg.led_alert_seconds, cfg.led_warn_laps, cfg.led_alert_laps) == (60, 30, 5, 2)
+    _write(tmp_path, monkeypatch, {"led_alert_seconds": 20, "led_alert_laps": 1})            # rouge plus court que 30 s
+    cfg = AppConfig.load()
+    assert (cfg.led_warn_seconds, cfg.led_alert_seconds, cfg.led_warn_laps, cfg.led_alert_laps) == (20, 20, 1, 1)
+    _write(tmp_path, monkeypatch, {"led_warn_seconds": 90, "led_alert_seconds": 45})         # config 3.1 : inchangée
+    cfg = AppConfig.load()
+    assert (cfg.led_warn_seconds, cfg.led_alert_seconds) == (90, 45)
+
+
 def test_config_with_utf8_bom_is_still_read(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"led_brightness": 3}).encode())

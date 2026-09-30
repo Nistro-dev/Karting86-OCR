@@ -1,5 +1,5 @@
 #define MyAppName "New Kart - Panneau led"
-#define MyAppVersion "3.0.0"
+#define MyAppVersion "3.1.0"
 #define MyAppExeName "NewKartPanneauLed.exe"
 #define MyAppPublisher "CodeForgeStudio"
 #define MyAppPublisherURL "https://codeforgestudio.fr"
