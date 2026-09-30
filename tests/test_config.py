@@ -29,7 +29,18 @@ def test_new_led_fields_have_defaults(tmp_path, monkeypatch):
     assert cfg.led_idle_clock is True
     assert cfg.led_rotate_180 is False
     assert cfg.led_enabled is True and cfg.led_wifi_autoconnect is True
+    assert cfg.source == "ocr" and cfg.apex_data_dir.endswith("Data") and not cfg.is_ready
+    cfg.source = "apex_live"
+    assert cfg.is_ready and not cfg.ocr_ready   # la source directe peut démarrer seule
     assert cfg.log_level == "INFO"
+
+
+def test_config_with_utf8_bom_is_still_read(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"window_title": "GoKarts", "zone": [1, 2, 3, 4]}).encode())
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", str(path))
+    cfg = AppConfig.load()
+    assert cfg.window_title == "GoKarts" and cfg.zone == [1, 2, 3, 4]
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path, monkeypatch):

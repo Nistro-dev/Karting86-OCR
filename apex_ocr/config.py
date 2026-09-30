@@ -72,13 +72,26 @@ class AppConfig:
     led_idle_clock: bool = True  # hors course : afficher l'heure (sinon écran noir)
     led_rotate_180: bool = False  # panneau monté tête en bas : toute l'image est tournée de 180°
     log_level: str = "INFO"  # DEBUG (lectures OCR brutes) activable à chaud dans la fenêtre dev
+    # Source du chrono : "ocr" (capture d'écran + Tesseract) ou "apex_live" (lecture directe de la
+    # base Firebird de GoKarts/GoServer, voir apex_ocr/source/apex_live.py et docs/apex_findings.md ;
+    # repli automatique sur l'OCR si la base ne répond plus). Lecture seule, compte Firebird par défaut.
+    source: str = "ocr"
+    apex_data_dir: str = r"C:\ApexTiming\Data"   # dossier des bases journalières DAYAAAAMMJJ.GO
+    apex_db_host: str = "localhost"
+    apex_db_user: str = "SYSDBA"
+    apex_db_password: str = "masterkey"
+    apex_fbclient_path: str = ""                 # fbclient.dll 64 bits ; vide = détection automatique
+    apex_poll_ms: int = 500
+    apex_fallback_seconds: float = 10.0         # base muette depuis ce délai -> repli OCR
 
     @classmethod
     def load(cls) -> "AppConfig":
         cfg = cls()
         if os.path.exists(CONFIG_PATH):
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                # utf-8-sig : un config.json réenregistré avec un BOM (Bloc-notes, PowerShell)
+                # doit rester lisible, sinon toute la calibration repart aux valeurs par défaut.
+                with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
             except (json.JSONDecodeError, IOError):
                 data = {}
@@ -99,5 +112,10 @@ class AppConfig:
             json.dump(asdict(self), f, indent=2)
 
     @property
-    def is_ready(self) -> bool:
+    def ocr_ready(self) -> bool:
         return bool(self.window_title and self.zone)
+
+    @property
+    def is_ready(self) -> bool:
+        """Peut démarrer seule au lancement : OCR calibré, ou source directe choisie."""
+        return self.ocr_ready or self.source == "apex_live"
