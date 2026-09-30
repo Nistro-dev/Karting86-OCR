@@ -73,7 +73,29 @@ Appli v2.8.0 en `source: "apex_live"`, panneau LED branché, sessions test lanc�
 avec et sans tours (`CLAPS = 15`), pause/reprise et arrêt : « parfait, identique à GoKarts ». Aucun
 appel Tesseract pendant tout le test (journal : `Source directe Apex Timing active : l'OCR est en pause`).
 
-### Sessions « enfants »
+### Durée « Automatique » et cas particuliers par modèle de kart (résolu le 30/09 après-midi)
+
+Dans la fenêtre « Paramètres de la session » de GoKarts, la durée est soit saisie (case
+**Automatique** décochée → bit `0x100` dans `CSTATUS`, `CDURATION` = durée saisie), soit
+**automatique** : `CDURATION` reste à la durée par défaut de la piste (`TTRACKS_V21.CSESSIONS_DURATION`,
+10 min) et GoKarts applique les **cas particuliers** de `CENTER.GO`, table `TTRACKS_CASES_V20`
+(`CTRACK`, `CDAY_OF_WEEK` 0 = tous les jours, `CKART_MODEL`, `CFIELD` 11 = durée de session, `CVALUE` en µs) :
+
+| Modèle de kart | Nom | Durée automatique |
+|---|---|---|
+| 9 | SR5 | 10:00 |
+| 11 | BIPLACE | 10:00 |
+| 12 | LR6 (enfants) | **08:00** |
+
+Vérifié en direct : session 3 du 30/09 (LR6, automatique, `CDURATION` 10 min) affichée 06:37 dans
+GoKarts à 14:47:04 pour un départ à 14:45:41 → 8 min. L'appli lit ces règles à la connexion puis
+toutes les 10 min ; base centrale illisible → `CDURATION` fait foi (journal `WARNING`).
+
+Autre observation : la fin d'une session est marquée dans `T1_S<n>_RC` par une ligne `CST = 0xFF05`
+(`CTTI` = durée réelle, ex. 481,2 s pour 8 min) ; `CFINISHTIME` n'est posé que plus tard
+(clôture par l'opérateur), la ligne restant « active » entre-temps.
+
+### Sessions « enfants » (historique de l'enquête)
 
 Le 27/09, des sessions à `CDURATION = 600 000 000` (10:00) se sont terminées après 8:01 : ce sont
 des sessions enfants, dont le chrono **part de 08:00 à l'écran** (dixit Maël). La durée réelle n'est
@@ -82,8 +104,7 @@ ou autre table de paramètres) avant de faire confiance à `CDURATION` pour ce t
 
 ## 4. Ce qui reste à faire / limites
 
-- Sessions enfants : trouver d'où vient le 08:00 (à observer sur une vraie session enfants : `CDURATION`
-  reste-t-il à 600 s pendant qu'elle tourne ?).
+- Sessions enfants : résolu (cas particuliers par modèle de kart, voir plus haut).
 - Décision de Maël après validation : l'OCR a été **retiré complètement** en v3.0.0 (appli renommée
   « New Kart - Panneau led ») ; la base est la seule source. Sans base : statut rouge, panneau sur l'heure,
   nouvelles tentatives automatiques.

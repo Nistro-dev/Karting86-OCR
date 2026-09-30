@@ -13,9 +13,9 @@ import pytest
 from apex_ocr.readings import seconds_from_time, time_from_seconds
 from apex_ocr.session import SessionEvent, SessionState, SessionTracker, StopReason, current_display
 from apex_ocr.source import apex_live
-from apex_ocr.source.apex_live import (ApexLiveSource, LiveStatus, SessionRow, db_path_for, format_remaining,
-                                       from_us, make_reading, pick_live_session, probe_database, remaining_us,
-                                       to_us)
+from apex_ocr.source.apex_live import (ApexLiveSource, LiveStatus, SessionRow, db_path_for, effective_duration_us,
+                                       format_remaining, from_us, make_reading, pick_live_session, probe_database,
+                                       remaining_us, to_us, with_effective_duration)
 
 US = 1_000_000
 # Session test 1 du 30/09/2026 : départ 11:17:02.350, 10 min, pause à 11:20:16.371, reprise après 6,368 s.
@@ -27,6 +27,14 @@ RESUMED = SessionRow(idx=1, status=0x10011, start_us=START, pause_us=6368000, fi
 # Session du 27/09 : 8:30, finie normalement (CFINISHTIME posé, bit 0x20).
 FINISHED = SessionRow(idx=3, status=0x30120, start_us=3999680164773000, pause_us=0, finish_us=3999680675773000,
                       duration_us=510 * US, laps_total=0)
+# Session enfants du 30/09 14:16 : LR6 (modèle 12), durée « Automatique » (bit 0x100 absent), CDURATION 10 min
+# mais GoKarts compte 8 min (cas particulier TTRACKS_CASES : modèle 12 -> 480 s).
+KIDS = SessionRow(idx=2, status=0x20011, start_us=START, pause_us=0, finish_us=0, duration_us=600 * US, laps_total=0,
+                  kart_model=12)
+# Session du 27/09 à durée saisie 8:30 (bit 0x100) sur des SR5 : CDURATION fait foi.
+MANUAL = SessionRow(idx=5, status=0x50120, start_us=START, pause_us=0, finish_us=0, duration_us=510 * US, laps_total=0,
+                    kart_model=9)
+RULES = {9: 600 * US, 11: 600 * US, 12: 480 * US}
 # Ligne « démarrée » mais jamais active ni finie (résidu du 27/09) : à ignorer.
 STALE = SessionRow(idx=1, status=0x10010, start_us=3999660316921000, pause_us=0, finish_us=0, duration_us=600 * US, laps_total=0)
 
@@ -35,6 +43,19 @@ def test_timestamps_are_microseconds_since_delphi_epoch():
     assert from_us(START) == datetime.datetime(2026, 9, 30, 11, 17, 2, 350000)
     assert to_us(datetime.datetime(2026, 9, 30, 11, 17, 2, 350000)) == START
     assert db_path_for(r"C:\ApexTiming\Data", datetime.date(2026, 9, 30)) == r"C:\ApexTiming\Data\DAY20260930.GO"
+
+
+def test_automatic_duration_follows_kart_model_rules():
+    assert effective_duration_us(KIDS, RULES) == 480 * US                     # LR6 automatique -> 8 min
+    assert effective_duration_us(KIDS, {}) == 600 * US                        # règles illisibles -> CDURATION
+    assert effective_duration_us(RUNNING, RULES) == 600 * US                  # modèle 0 : pas de règle
+    assert effective_duration_us(MANUAL, RULES) == 510 * US                   # durée saisie : jamais remplacée
+    assert effective_duration_us(dataclasses.replace(MANUAL, kart_model=12), RULES) == 510 * US
+    kids = with_effective_duration(KIDS, RULES)
+    assert kids.duration_us == 480 * US and kids.key == KIDS.key
+    assert with_effective_duration(RUNNING, RULES) is RUNNING
+    r = make_reading(kids, START + 121 * US, None)                             # 2:01 écoulées
+    assert r.time_text == "05:59"                                              # et non 07:59
 
 
 def test_pick_live_session_ignores_stale_finished_and_just_ended():
@@ -171,6 +192,7 @@ class FakeDb:
         self.fail = False
         self.rollbacks = 0
         self.connections: list[FakeConnection] = []
+        self.rules: dict[int, int] = {}
 
 
 @pytest.fixture
@@ -195,6 +217,7 @@ def fake_db(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ApexLiveSource, "_ensure_connection", ensure)
     monkeypatch.setattr(ApexLiveSource, "_read_only_transaction", lambda self: self._con.transaction_manager())
+    monkeypatch.setattr(ApexLiveSource, "_load_rules", lambda self: dict(db.rules))
     return db
 
 
@@ -247,6 +270,18 @@ def test_source_reads_session_then_end_and_ignores_rewrite(fake_db, tmp_path):
     finally:
         src.stop()
     assert src.status == LiveStatus.DISABLED
+
+
+def test_source_applies_kids_duration_rule(fake_db, tmp_path):
+    fake_db.rules = dict(RULES)
+    fake_db.rows = [KIDS]
+    src = make_source(tmp_path, lambda: from_us(START + 121 * US))
+    src.start()
+    try:
+        wait_until(lambda: src.latest()[0] is not None)
+        assert src.latest()[0].time_text == "05:59"                            # 8 min - 2:01, pas 10 min
+    finally:
+        src.stop()
 
 
 def test_source_retries_and_reports_detail(fake_db, tmp_path):
