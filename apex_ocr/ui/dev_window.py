@@ -54,6 +54,7 @@ class DevWindowCallbacks:
     on_led_laps_only: Callable[[bool], None]
     on_led_show_laps: Callable[[bool], None]
     on_led_idle_clock: Callable[[bool], None]
+    on_led_rotate_180: Callable[[bool], None]
     on_led_wifi_autoconnect: Callable[[bool], None]
     on_led_chunk_minutes: Callable[[int], None]
     on_led_password: Callable[[str], None]
@@ -276,6 +277,15 @@ class DevWindow(ctk.CTkToplevel):
         ctk.CTkSwitch(
             row, text="Hors course : afficher l'heure", variable=self.led_idle_clock_var,
             command=lambda: self._cb.on_led_idle_clock(self.led_idle_clock_var.get()),
+        ).pack(side="left")
+
+        row = ctk.CTkFrame(disp_frame, fg_color="transparent")
+        row.pack(fill="x", **pad)
+        ctk.CTkLabel(row, text="Orientation :", width=label_w, anchor="w").pack(side="left")
+        self.led_rotate_var = tk.BooleanVar(value=config.led_rotate_180)
+        ctk.CTkSwitch(
+            row, text="Panneau à l'envers (image tournée de 180°)", variable=self.led_rotate_var,
+            command=lambda: self._cb.on_led_rotate_180(self.led_rotate_var.get()),
         ).pack(side="left")
 
         row = ctk.CTkFrame(disp_frame, fg_color="transparent")

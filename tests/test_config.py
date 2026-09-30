@@ -27,6 +27,7 @@ def test_new_led_fields_have_defaults(tmp_path, monkeypatch):
     _write(tmp_path, monkeypatch, {"window_title": "Apex"})
     cfg = AppConfig.load()
     assert cfg.led_idle_clock is True
+    assert cfg.led_rotate_180 is False
     assert cfg.led_enabled is True and cfg.led_wifi_autoconnect is True
     assert cfg.log_level == "INFO"
 

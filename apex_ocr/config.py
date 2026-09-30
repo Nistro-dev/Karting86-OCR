@@ -70,6 +70,7 @@ class AppConfig:
     led_alert_laps: int = 5
     led_laps_only: bool = False
     led_idle_clock: bool = True  # hors course : afficher l'heure (sinon écran noir)
+    led_rotate_180: bool = False  # panneau monté tête en bas : toute l'image est tournée de 180°
     log_level: str = "INFO"  # DEBUG (lectures OCR brutes) activable à chaud dans la fenêtre dev
 
     @classmethod
