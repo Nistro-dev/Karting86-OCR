@@ -1,6 +1,6 @@
-"""Fenêtre "dev" : configuration, calibration, test OCR, panneau LED, journal.
+"""Fenêtre "dev" : réglages de la source Apex Timing, panneau LED, journal.
 Masquée par défaut, ouverte via le raccourci Ctrl+Maj+D sur la fenêtre
-principale (voir ``MainWindow``). Trois onglets : « Capture & OCR »,
+principale (voir ``MainWindow``). Trois onglets : « Apex Timing »,
 « Panneau LED », « Diagnostics »."""
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from tkinter import colorchooser
 from typing import Callable, Optional
 
 import customtkinter as ctk
-from PIL import Image, ImageTk
 
 from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthStatus
@@ -21,9 +20,8 @@ from apex_ocr.ui import branding
 LED_BRIGHTNESS_DEBOUNCE_MS = 400
 
 # Bornes des champs numériques (valeur hors plage ou vide -> ancienne valeur rétablie).
-OCR_INTERVAL_MIN_MS, OCR_INTERVAL_MAX_MS = 150, 5000     # Tesseract met ~150 ms par lecture
-TOLERANCE_MIN_S, TOLERANCE_MAX_S = 1, 30
-LOST_TIMEOUT_MIN_S, LOST_TIMEOUT_MAX_S = 3, 120
+POLL_MIN_MS, POLL_MAX_MS = 100, 5000
+STALE_MIN_S, STALE_MAX_S = 3, 120
 ALERT_SECONDS_MIN, ALERT_SECONDS_MAX = 5, 600
 ALERT_LAPS_MIN, ALERT_LAPS_MAX = 1, 50
 CHUNK_MIN, CHUNK_MAX = 1, 3
@@ -31,16 +29,11 @@ CHUNK_MIN, CHUNK_MAX = 1, 3
 
 @dataclass
 class DevWindowCallbacks:
-    on_refresh_windows: Callable[[], None]          # asynchrone : le résultat arrive via set_window_titles()
-    on_browse_tesseract: Callable[[], Optional[str]]
-    on_select_zone: Callable[[], None]
-    on_test_ocr: Callable[[], None]
+    on_browse_data_dir: Callable[[], Optional[str]]
     on_start: Callable[[], None]
     on_stop: Callable[[], None]
-    on_open_test_page: Callable[[], None]
+    on_probe: Callable[[], None]
     on_config_changed: Callable[[], None]
-    on_auto_calibrate: Callable[[], None]
-    on_cancel_calibrate: Callable[[], None]
     on_clear_errors: Callable[[], None]
     on_open_logs: Callable[[], None]
     on_open_config: Callable[[], None]
@@ -59,28 +52,20 @@ class DevWindowCallbacks:
     on_led_chunk_minutes: Callable[[int], None]
     on_led_password: Callable[[str], None]
     on_log_level: Callable[[str], None]
-    on_source_changed: Callable[[str], None]   # "ocr" | "apex_live"
-
-
-SOURCE_LABELS = {"ocr": "OCR (écran)", "apex_live": "Apex Timing (base)"}
-SOURCE_KEYS = {v: k for k, v in SOURCE_LABELS.items()}
 
 
 class DevWindow(ctk.CTkToplevel):
     def __init__(self, parent, config: AppConfig, callbacks: DevWindowCallbacks):
         super().__init__(parent)
         self._cb = callbacks
-        self.title("Apex Timing OCR — Dev")
-        self.geometry("960x680")
-        self.minsize(820, 560)   # tient sur un portable 1366×768 (barre des tâches comprise)
+        self.title(f"{branding.APP_NAME} — Dev")
+        self.geometry("960x640")
+        self.minsize(820, 540)   # tient sur un portable 1366×768 (barre des tâches comprise)
         # Fermer la fenêtre (croix, Échap) la cache plutôt que la détruit :
-        # elle garde son état (journal, aperçu) prête à rouvrir instantanément.
+        # elle garde son état (journal) prête à rouvrir instantanément.
         self.protocol("WM_DELETE_WINDOW", self.withdraw)
         self.bind("<Escape>", lambda e: self.withdraw())
 
-        self._preview_photo: Optional[ImageTk.PhotoImage] = None
-        self._preview_raw: Optional[Image.Image] = None
-        self._preview_processed: Optional[Image.Image] = None
         self._led_brightness_after: Optional[str] = None  # timer de debounce du curseur de luminosité
 
         self._build_layout(config)
@@ -91,112 +76,81 @@ class DevWindow(ctk.CTkToplevel):
     def _build_layout(self, config: AppConfig) -> None:
         self.tabs = ctk.CTkTabview(self)
         self.tabs.pack(fill="both", expand=True, padx=10, pady=(6, 10))
-        self.tab_capture = self.tabs.add("Capture & OCR")
+        self.tab_source = self.tabs.add("Apex Timing")
         self.tab_led = self.tabs.add("Panneau LED")
         self.tab_diag = self.tabs.add("Diagnostics")
 
-        self._build_capture_tab(config)
+        self._build_source_tab(config)
         self._build_led_tab(config)
         self._build_diag_tab(config)
 
-    # -- onglet Capture & OCR ---------------------------------------------------
+    # -- onglet Apex Timing -----------------------------------------------------
 
-    def _build_capture_tab(self, config: AppConfig) -> None:
-        tab = self.tab_capture
+    def _build_source_tab(self, config: AppConfig) -> None:
+        tab = self.tab_source
         pad = {"padx": 12, "pady": 5}
-        label_w = 110
+        label_w = 150
 
         cfg_frame = ctk.CTkFrame(tab)
         cfg_frame.pack(fill="x", padx=6, pady=(6, 6))
 
         row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
         row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Source :", width=label_w, anchor="w").pack(side="left")
-        self.source_var = tk.StringVar(value=SOURCE_LABELS.get(config.source, SOURCE_LABELS["ocr"]))
-        ctk.CTkSegmentedButton(
-            row, values=list(SOURCE_LABELS.values()), variable=self.source_var, width=300,
-            command=lambda v: self._cb.on_source_changed(SOURCE_KEYS.get(v, "ocr")),
-        ).pack(side="left")
-        self.source_status_lbl = ctk.CTkLabel(row, text="", anchor="w", text_color=branding.ACCENT_GREY)
-        self.source_status_lbl.pack(side="left", fill="x", expand=True, padx=(12, 0))
-
-        self.tess_var = tk.StringVar(value=config.tesseract_path)
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Tesseract :", width=label_w, anchor="w").pack(side="left")
-        ctk.CTkEntry(row, textvariable=self.tess_var).pack(side="left", fill="x", expand=True, padx=(0, 6))
-        ctk.CTkButton(row, text="...", width=32, command=self._on_browse_tess).pack(side="left")
-
-        self.window_var = tk.StringVar(value=config.window_title)
-        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
-        row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Fenêtre :", width=label_w, anchor="w").pack(side="left")
-        self.window_combo = ctk.CTkComboBox(row, variable=self.window_var, values=[])
-        self.window_combo.pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self.refresh_btn = ctk.CTkButton(row, text="↻", width=32, command=self._on_refresh_windows)
-        self.refresh_btn.pack(side="left")
+        ctk.CTkLabel(row, text="Base de données :", width=label_w, anchor="w").pack(side="left")
+        self.source_dot = tk.Canvas(row, width=14, height=14, highlightthickness=0)
+        self.source_dot.pack(side="left")
+        self._source_dot_id = self.source_dot.create_oval(2, 2, 12, 12, fill=branding.STATUS_GREY, outline="")
+        self.source_status_lbl = ctk.CTkLabel(row, text="Lecture arrêtée", anchor="w")
+        self.source_status_lbl.pack(side="left", fill="x", expand=True, padx=(6, 10))
 
         row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
         row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Zone :", width=label_w, anchor="w").pack(side="left")
-        self.zone_label = ctk.CTkLabel(row, text=self.format_zone(config.zone))
-        self.zone_label.pack(side="left", padx=(0, 10))
-        ctk.CTkButton(row, text="Définir la zone", command=self._cb.on_select_zone).pack(side="left")
+        ctk.CTkLabel(row, text="Session en cours :", width=label_w, anchor="w").pack(side="left")
+        self.last_reading_lbl = ctk.CTkLabel(row, text="—", font=("Consolas", 14, "bold"), anchor="w")
+        self.last_reading_lbl.pack(side="left", fill="x", expand=True)
 
         row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
         row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Seuil :", width=label_w, anchor="w").pack(side="left")
-        self.threshold_var = tk.IntVar(value=config.threshold)
-        ctk.CTkSlider(row, from_=0, to=255, variable=self.threshold_var, width=220).pack(side="left")
-        self.threshold_lbl = ctk.CTkLabel(row, text=str(config.threshold), width=36)
-        self.threshold_lbl.pack(side="left", padx=6)
-        self.threshold_var.trace_add(
-            "write", lambda *_: self.threshold_lbl.configure(text=str(self.threshold_var.get()))
-        )
-        self.calibrate_btn = ctk.CTkButton(row, text="Auto", width=60, command=self._cb.on_auto_calibrate)
-        self.calibrate_btn.pack(side="left", padx=(6, 0))
-        self.cancel_calibrate_btn = ctk.CTkButton(
-            row, text="Annuler", width=70, state="disabled", command=self._cb.on_cancel_calibrate,
-        )
-        self.cancel_calibrate_btn.pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(row, text="Dossier des bases :", width=label_w, anchor="w").pack(side="left")
+        self.data_dir_var = tk.StringVar(value=config.apex_data_dir)
+        entry = ctk.CTkEntry(row, textvariable=self.data_dir_var)
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        entry.bind("<FocusOut>", lambda e: self._cb.on_config_changed())
+        entry.bind("<Return>", lambda e: self._cb.on_config_changed())
+        ctk.CTkButton(row, text="...", width=32, command=self._on_browse_data_dir).pack(side="left")
 
         row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
         row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Intervalle :", width=label_w, anchor="w").pack(side="left")
-        self.interval_var = tk.StringVar(value=str(config.ocr_interval_ms))
-        self._numeric_entry(row, self.interval_var, 60, OCR_INTERVAL_MIN_MS, OCR_INTERVAL_MAX_MS,
-                            "Intervalle OCR", self._cb.on_config_changed).pack(side="left")
-        ctk.CTkLabel(row, text=f"ms (≥ {OCR_INTERVAL_MIN_MS} ms, Tesseract ~150 ms/lecture)").pack(side="left", padx=(4, 16))
-        ctk.CTkLabel(row, text="Tolérance :").pack(side="left")
-        self.tolerance_var = tk.StringVar(value=str(config.resync_tolerance_seconds))
-        self._numeric_entry(row, self.tolerance_var, 44, TOLERANCE_MIN_S, TOLERANCE_MAX_S,
-                            "Tolérance de resynchronisation", self._cb.on_config_changed).pack(side="left", padx=(6, 0))
-        ctk.CTkLabel(row, text="s").pack(side="left", padx=4)
+        ctk.CTkLabel(row, text="Firebird :", width=label_w, anchor="w").pack(side="left")
+        ctk.CTkLabel(row, text="hôte").pack(side="left")
+        self.db_host_var = tk.StringVar(value=config.apex_db_host)
+        self._text_entry(row, self.db_host_var, 120).pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(row, text="utilisateur").pack(side="left")
+        self.db_user_var = tk.StringVar(value=config.apex_db_user)
+        self._text_entry(row, self.db_user_var, 90).pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(row, text="mot de passe").pack(side="left")
+        self.db_password_var = tk.StringVar(value=config.apex_db_password)
+        self._text_entry(row, self.db_password_var, 120, show="•").pack(side="left", padx=(4, 0))
 
         row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
         row.pack(fill="x", **pad)
-        ctk.CTkLabel(row, text="Signal perdu :", width=label_w, anchor="w").pack(side="left")
-        self.ocr_lost_timeout_var = tk.StringVar(value=str(int(config.ocr_lost_timeout_seconds)))
-        self._numeric_entry(row, self.ocr_lost_timeout_var, 50, LOST_TIMEOUT_MIN_S, LOST_TIMEOUT_MAX_S,
-                            "Signal perdu", self._cb.on_config_changed).pack(side="left")
-        ctk.CTkLabel(row, text=f"s sans lecture valide avant d'arrêter la session ({LOST_TIMEOUT_MIN_S}–{LOST_TIMEOUT_MAX_S})").pack(side="left", padx=4)
+        ctk.CTkLabel(row, text="Lecture :", width=label_w, anchor="w").pack(side="left")
+        ctk.CTkLabel(row, text="toutes les").pack(side="left")
+        self.poll_var = tk.StringVar(value=str(config.apex_poll_ms))
+        self._numeric_entry(row, self.poll_var, 60, POLL_MIN_MS, POLL_MAX_MS, "Cadence de lecture",
+                            self._cb.on_config_changed).pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(row, text=f"ms ({POLL_MIN_MS}–{POLL_MAX_MS})").pack(side="left", padx=(4, 16))
+        ctk.CTkLabel(row, text="Base muette après").pack(side="left")
+        self.stale_var = tk.StringVar(value=str(int(config.apex_stale_seconds)))
+        self._numeric_entry(row, self.stale_var, 44, STALE_MIN_S, STALE_MAX_S, "Base muette",
+                            self._cb.on_config_changed).pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(row, text=f"s → statut rouge, session abandonnée ({STALE_MIN_S}–{STALE_MAX_S})").pack(side="left", padx=4)
 
-        prev_frame = ctk.CTkFrame(tab)
-        prev_frame.pack(fill="x", padx=6, pady=6)
-        head = ctk.CTkFrame(prev_frame, fg_color="transparent")
-        head.pack(fill="x", padx=8, pady=(6, 0))
-        ctk.CTkLabel(head, text="Aperçu de la zone capturée", anchor="w").pack(side="left")
-        self.preview_mode_var = tk.StringVar(value="Brute")
-        ctk.CTkSegmentedButton(
-            head, values=["Brute", "Prétraitée"], variable=self.preview_mode_var,
-            command=lambda _v: self._redraw_preview(), width=180,
-        ).pack(side="left", padx=(16, 0))
-        ctk.CTkLabel(head, text="Dernière lecture :").pack(side="left", padx=(24, 4))
-        self.last_ocr_lbl = ctk.CTkLabel(head, text="—", font=("Consolas", 13, "bold"), anchor="w")
-        self.last_ocr_lbl.pack(side="left", fill="x", expand=True)
-        self.preview_canvas = tk.Canvas(prev_frame, height=64, bg="#1e1e1e", highlightthickness=0)
-        self.preview_canvas.pack(fill="x", padx=8, pady=8)
-        self.preview_canvas.bind("<Configure>", lambda e: self._redraw_preview())
+        ctk.CTkLabel(
+            cfg_frame, anchor="w", justify="left", wraplength=880, text_color=branding.ACCENT_GREY,
+            text="La base du jour (DAYAAAAMMJJ.GO) est créée par GoKarts à son lancement et lue en lecture seule : "
+                 "départ, pause, fin et durée de la session, tours du leader. Rien n'est écrit côté Apex Timing.",
+        ).pack(fill="x", padx=12, pady=(0, 8))
 
         btn_row = ctk.CTkFrame(tab, fg_color="transparent")
         btn_row.pack(fill="x", padx=6, pady=4)
@@ -204,11 +158,8 @@ class DevWindow(ctk.CTkToplevel):
         self.start_btn.pack(side="left", padx=4)
         self.stop_btn = ctk.CTkButton(btn_row, text="■  Arrêter", command=self._cb.on_stop, state="disabled")
         self.stop_btn.pack(side="left", padx=4)
-        self.test_ocr_btn = ctk.CTkButton(btn_row, text="Test OCR", command=self._cb.on_test_ocr)
-        self.test_ocr_btn.pack(side="right", padx=4)
-        ctk.CTkButton(btn_row, text="Page de test", command=self._cb.on_open_test_page).pack(side="right", padx=4)
-
-        self.refresh_windows(config.window_title)
+        self.probe_btn = ctk.CTkButton(btn_row, text="Tester la base", command=self._cb.on_probe)
+        self.probe_btn.pack(side="right", padx=4)
 
     # -- onglet Panneau LED -----------------------------------------------------
 
@@ -377,12 +328,19 @@ class DevWindow(ctk.CTkToplevel):
 
         log_frame = ctk.CTkFrame(tab)
         log_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-        ctk.CTkLabel(log_frame, text="Journal de la session (l'historique complet est dans apex_ocr.log)",
+        ctk.CTkLabel(log_frame, text="Journal de la session (l'historique complet est dans le fichier de journal)",
                      anchor="w").pack(fill="x", padx=8, pady=(6, 0))
         self.log_text = ctk.CTkTextbox(log_frame, state="disabled", font=("Consolas", 11))
         self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
 
-    # ---- champs numériques validés -----------------------------------------
+    # ---- champs -------------------------------------------------------------
+
+    def _text_entry(self, parent, var: tk.StringVar, width: int, show: Optional[str] = None) -> ctk.CTkEntry:
+        """Champ texte appliqué à la sortie du champ / Entrée (comme les champs numériques)."""
+        entry = ctk.CTkEntry(parent, textvariable=var, width=width, show=show)
+        entry.bind("<FocusOut>", lambda e: self._cb.on_config_changed())
+        entry.bind("<Return>", lambda e: self._cb.on_config_changed())
+        return entry
 
     def _numeric_entry(self, parent, var: tk.StringVar, width: int, minimum: int, maximum: int,
                        label: str, on_valid: Callable[[], None]) -> ctk.CTkEntry:
@@ -464,29 +422,13 @@ class DevWindow(ctk.CTkToplevel):
         self._led_brightness_after = None
         self._cb.on_led_brightness(level)
 
-    # ---- capture : actions ----------------------------------------------------
+    # ---- source : actions -----------------------------------------------------
 
-    def _on_browse_tess(self) -> None:
-        path = self._cb.on_browse_tesseract()
+    def _on_browse_data_dir(self) -> None:
+        path = self._cb.on_browse_data_dir()
         if path:
-            self.tess_var.set(path)
+            self.data_dir_var.set(path)
             self._cb.on_config_changed()
-
-    def _on_refresh_windows(self) -> None:
-        self.refresh_windows(self.window_var.get())
-
-    def refresh_windows(self, keep_selected: str = "") -> None:
-        """Demande la liste des fenêtres (en tâche de fond côté appli) ; ``set_window_titles``
-        la reçoit. La sélection courante est conservée."""
-        self._keep_selected = keep_selected
-        self.refresh_btn.configure(state="disabled")
-        self._cb.on_refresh_windows()
-
-    def set_window_titles(self, titles: list[str]) -> None:
-        self.window_combo.configure(values=titles)
-        self.refresh_btn.configure(state="normal")
-        if getattr(self, "_keep_selected", ""):
-            self.window_var.set(self._keep_selected)
 
     def toggle(self) -> None:
         if self.state() == "withdrawn":
@@ -495,13 +437,6 @@ class DevWindow(ctk.CTkToplevel):
             self.focus_force()
         else:
             self.withdraw()
-
-    @staticmethod
-    def format_zone(zone) -> str:
-        if zone:
-            x, y, w, h = zone
-            return f"x={x}  y={y}  {w}×{h} px"
-        return "Non définie"
 
     # ---- lecture des valeurs courantes -----------------------------------
 
@@ -518,38 +453,31 @@ class DevWindow(ctk.CTkToplevel):
 
     def current_config_values(self, fallback: AppConfig) -> dict:
         return {
-            "window_title": self.window_var.get().strip(),
-            "tesseract_path": self.tess_var.get().strip(),
-            "threshold": int(self.threshold_var.get()),
-            "ocr_interval_ms": self._parse_int(self.interval_var, fallback.ocr_interval_ms,
-                                               OCR_INTERVAL_MIN_MS, OCR_INTERVAL_MAX_MS),
-            "resync_tolerance_seconds": self._parse_int(self.tolerance_var, fallback.resync_tolerance_seconds,
-                                                        TOLERANCE_MIN_S, TOLERANCE_MAX_S),
-            "ocr_lost_timeout_seconds": float(self._parse_int(
-                self.ocr_lost_timeout_var, int(fallback.ocr_lost_timeout_seconds),
-                LOST_TIMEOUT_MIN_S, LOST_TIMEOUT_MAX_S)),
+            "apex_data_dir": self.data_dir_var.get().strip() or fallback.apex_data_dir,
+            "apex_db_host": self.db_host_var.get().strip() or fallback.apex_db_host,
+            "apex_db_user": self.db_user_var.get().strip() or fallback.apex_db_user,
+            "apex_db_password": self.db_password_var.get(),
+            "apex_poll_ms": self._parse_int(self.poll_var, fallback.apex_poll_ms, POLL_MIN_MS, POLL_MAX_MS),
+            "apex_stale_seconds": float(self._parse_int(self.stale_var, int(fallback.apex_stale_seconds),
+                                                        STALE_MIN_S, STALE_MAX_S)),
         }
 
     # ---- mise à jour depuis l'orchestrateur ------------------------------
-
-    def set_zone(self, zone) -> None:
-        self.zone_label.configure(text=self.format_zone(zone))
-
-    def set_threshold(self, value: int) -> None:
-        self.threshold_var.set(value)
 
     def set_running(self, running: bool) -> None:
         self.start_btn.configure(state="disabled" if running else "normal")
         self.stop_btn.configure(state="normal" if running else "disabled")
 
-    def set_calibrating(self, calibrating: bool) -> None:
-        self.calibrate_btn.configure(state="disabled" if calibrating else "normal",
-                                     text="Calibration..." if calibrating else "Auto")
-        self.cancel_calibrate_btn.configure(state="normal" if calibrating else "disabled")
+    def set_probing(self, probing: bool) -> None:
+        self.probe_btn.configure(state="disabled" if probing else "normal",
+                                 text="Test..." if probing else "Tester la base")
 
-    def set_testing_ocr(self, testing: bool) -> None:
-        self.test_ocr_btn.configure(state="disabled" if testing else "normal",
-                                    text="Lecture..." if testing else "Test OCR")
+    def set_source_status(self, text: str, color: Optional[str] = None) -> None:
+        self.source_dot.itemconfig(self._source_dot_id, fill=color or branding.STATUS_GREY)
+        self.source_status_lbl.configure(text=text)
+
+    def set_last_reading(self, text: str) -> None:
+        self.last_reading_lbl.configure(text=text or "—")
 
     def led_host_input(self) -> str:
         """IP (ou « ip:port ») saisie pour le panneau LED, sans espaces autour."""
@@ -590,35 +518,6 @@ class DevWindow(ctk.CTkToplevel):
     def set_diagnostics(self, error_count: int, since_last_error: str) -> None:
         self.error_count_lbl.configure(text=f"Erreurs détectées : {error_count}")
         self.last_error_lbl.configure(text=f"Depuis la dernière erreur : {since_last_error}")
-
-    def set_source_status(self, text: str, color: Optional[str] = None) -> None:
-        self.source_status_lbl.configure(text=text, text_color=color or branding.ACCENT_GREY)
-
-    def set_last_ocr_text(self, text: str) -> None:
-        self.last_ocr_lbl.configure(text=text if text else "(rien)")
-
-    def set_preview_image(self, raw: Image.Image, processed: Optional[Image.Image] = None) -> None:
-        """Aperçu : image brute de la zone et, si fournie, l'image prétraitée (celle
-        réellement envoyée à Tesseract) ; la bascule choisit laquelle est affichée."""
-        self._preview_raw = raw
-        self._preview_processed = processed
-        self._redraw_preview()
-
-    def _redraw_preview(self) -> None:
-        img = self._preview_processed if self.preview_mode_var.get() == "Prétraitée" else self._preview_raw
-        if img is None:
-            img = self._preview_raw
-        if img is None:
-            return
-        cw = self.preview_canvas.winfo_width() or 640
-        ch = int(self.preview_canvas.cget("height")) or 64
-        iw, ih = img.size
-        scale = min(cw / iw, ch / ih, 4.0)
-        dw, dh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        disp = img.resize((dw, dh), Image.LANCZOS)
-        self._preview_photo = ImageTk.PhotoImage(disp)
-        self.preview_canvas.delete("all")
-        self.preview_canvas.create_image(cw // 2, ch // 2, anchor="center", image=self._preview_photo)
 
     def log(self, message: str) -> None:
         self.log_text.configure(state="normal")

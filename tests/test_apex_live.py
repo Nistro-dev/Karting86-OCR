@@ -10,12 +10,12 @@ import time
 
 import pytest
 
-from apex_ocr.ocr.parsing import time_from_seconds
+from apex_ocr.readings import seconds_from_time, time_from_seconds
 from apex_ocr.session import SessionEvent, SessionState, SessionTracker, StopReason, current_display
 from apex_ocr.source import apex_live
-from apex_ocr.source.apex_live import (ApexLiveSource, LiveStatus, SessionRow, SourceArbiter, db_path_for,
-                                       format_remaining, from_us, make_reading, pick_live_session,
-                                       remaining_us, to_us)
+from apex_ocr.source.apex_live import (ApexLiveSource, LiveStatus, SessionRow, db_path_for, format_remaining,
+                                       from_us, make_reading, pick_live_session, probe_database, remaining_us,
+                                       to_us)
 
 US = 1_000_000
 # Session test 1 du 30/09/2026 : départ 11:17:02.350, 10 min, pause à 11:20:16.371, reprise après 6,368 s.
@@ -77,13 +77,22 @@ def test_laps_only_when_session_has_a_lap_count():
     assert r.strict().has_laps and r.lenient().laps_done == 3
 
 
-def test_arbiter_falls_back_after_silence_and_returns():
-    a = SourceArbiter(fallback_after_s=10)
-    assert a.update(0.0, last_ok=0.0) is None and not a.use_live                # jamais rien reçu
-    assert a.update(1.0, last_ok=1.0) == "live"
-    assert a.update(9.0, last_ok=1.0) is None and a.use_live
-    assert a.update(11.5, last_ok=1.0) == "ocr" and not a.use_live
-    assert a.update(12.0, last_ok=12.0) == "live"
+def test_readings_time_conversions():
+    assert seconds_from_time("08:15") == 495 and seconds_from_time("1:02:03") == 3723
+    assert seconds_from_time("abc") is None and seconds_from_time("1:2:3:4") is None
+    assert time_from_seconds(495, False) == "08:15" and time_from_seconds(3723, True) == "01:02:03"
+    assert time_from_seconds(0.2, False, round_up=True) == "00:01" and time_from_seconds(0.2, False) == "00:00"
+    assert time_from_seconds(-5, False) == "00:00"
+
+
+def test_probe_database_reports_missing_file_and_client(tmp_path, monkeypatch):
+    clock = lambda: from_us(START)
+    assert "absente" in probe_database(str(tmp_path), "localhost", "SYSDBA", "masterkey", clock=clock)
+    (tmp_path / "DAY20260930.GO").write_bytes(b"")
+    monkeypatch.setattr(apex_live, "FBCLIENT_CANDIDATES", [])
+    assert "fbclient.dll" in probe_database(str(tmp_path), "localhost", "SYSDBA", "masterkey", clock=clock)
+    report = probe_database(str(tmp_path), "localhost", "SYSDBA", "masterkey", str(tmp_path / "absent.dll"), clock=clock)
+    assert report.startswith("échec (")
 
 
 def test_tracker_round_up_pause_and_forced_stop():
@@ -105,7 +114,6 @@ def test_tracker_round_up_pause_and_forced_stop():
     assert t.state == SessionState.WAITING and t.last_completed.reason == StopReason.SOURCE_ENDED
     assert t.force_stop(11.0) == []                                              # déjà arrêté : sans effet
     assert current_display(t, 11.0).time_text == t.last_completed.time_text
-    assert time_from_seconds(0.2, False, round_up=True) == "00:01" and time_from_seconds(0.2, False) == "00:00"
 
 
 # ---- thread de lecture, base simulée ---------------------------------------------------

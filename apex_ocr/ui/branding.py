@@ -17,6 +17,8 @@ from PIL import Image
 from apex_ocr.health import HealthStatus
 from apex_ocr.led.panel import LedStatus
 
+APP_NAME = "New Kart - Panneau led"
+
 _UI_DIR = os.path.dirname(os.path.abspath(__file__))
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(_UI_DIR)), "assets")
 
@@ -51,8 +53,6 @@ LED_LABELS: dict[LedStatus, tuple[str, str]] = {
     LedStatus.CONNECTED: ("Connecté", STATUS_GREEN),
     LedStatus.RETRYING: ("Reconnexion...", PRIMARY_RED),
 }
-
-TESSERACT_DOWNLOAD_URL = "https://github.com/UB-Mannheim/tesseract/releases"
 
 
 def _load(path: str) -> Optional[Image.Image]:

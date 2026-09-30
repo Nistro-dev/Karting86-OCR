@@ -84,6 +84,8 @@ ou autre table de paramètres) avant de faire confiance à `CDURATION` pour ce t
 
 - Sessions enfants : trouver d'où vient le 08:00 (à observer sur une vraie session enfants : `CDURATION`
   reste-t-il à 600 s pendant qu'elle tourne ?).
-- Décision de Maël après validation : retirer complètement l'OCR de l'appli (la base est la seule source).
+- Décision de Maël après validation : l'OCR a été **retiré complètement** en v3.0.0 (appli renommée
+  « New Kart - Panneau led ») ; la base est la seule source. Sans base : statut rouge, panneau sur l'heure,
+  nouvelles tentatives automatiques.
 - Changement de jour : ouvrir `DAY<jour>.GO` du jour, retenter si la base n'existe pas encore (GoKarts pas lancé), repli OCR.
 - Le compte `SYSDBA` par défaut fonctionne ; si le mot de passe Firebird change, la source tombe et l'OCR reprend.

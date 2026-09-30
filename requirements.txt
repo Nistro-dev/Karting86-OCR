@@ -1,8 +1,5 @@
 customtkinter
-pytesseract
 Pillow
-mss
-pygetwindow
 pywin32
 pystray
 firebird-driver

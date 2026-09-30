@@ -1,12 +1,12 @@
-"""Orchestrateur applicatif : relie config, capture, OCR, session, santé et UI.
+"""Orchestrateur applicatif : relie config, source Apex Timing, session, santé, panneau LED et UI.
 
-Toute mutation d'état (session, santé, widgets) passe par le thread principal
-Tk via ``window.after(0, ...)`` — la boucle OCR tourne dans un thread séparé
-et ne fait que lire des images / appeler Tesseract.
+Toute mutation d'état (session, santé, widgets) passe par le thread principal Tk ;
+la source Apex Timing (``ApexLiveSource``) tourne dans son thread et ne fait que lire
+la base, le panneau LED dans le sien.
 
-Deux fenêtres : ``window`` (minimaliste, toujours visible/réduite dans la
-zone de notification) et ``dev_window`` (configuration/calibration/journal/
-test OCR/panneau LED, masquée par défaut, ouverte via Ctrl+Maj+D).
+Deux fenêtres : ``window`` (minimaliste, toujours visible/réduite dans la zone de
+notification) et ``dev_window`` (réglages Apex Timing / panneau LED / journal,
+masquée par défaut, ouverte via Ctrl+Maj+D).
 """
 from __future__ import annotations
 
@@ -14,14 +14,9 @@ import os
 import sys
 import threading
 import time
-import webbrowser
-from pathlib import Path
-from tkinter import TclError, filedialog, messagebox
+from tkinter import TclError, filedialog
 from typing import Optional
 
-from PIL import Image
-
-from apex_ocr import capture
 from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthMonitor, HealthStatus
 from apex_ocr.led import wifi
@@ -30,73 +25,53 @@ from apex_ocr.led.panel import LedPanel, LedStatus
 from apex_ocr.led.protocol import DEFAULT_HOST, WIFI_SSID_PREFIX
 from apex_ocr.led.rendering import COLOR_NAMES, color_index
 from apex_ocr.logging_setup import set_log_level, setup_logging
-from apex_ocr.ocr import engine
-from apex_ocr.ocr.calibration import calibrate_threshold
-from apex_ocr.ocr.parsing import parse_lenient, parse_strict
-from apex_ocr.ocr.preprocess import preprocess
-from apex_ocr.paths import CONFIG_PATH, LOG_DIR, OUTPUT_PATH, test_page_path
+from apex_ocr.paths import CONFIG_PATH, LOG_DIR, OUTPUT_PATH
 from apex_ocr.power import PowerMonitor
+from apex_ocr.readings import LenientReading
 from apex_ocr.session import DisplayValue, SessionEvent, SessionState, SessionTracker, StopReason, current_display
-from apex_ocr.source.apex_live import ApexLiveSource, LiveStatus, SourceArbiter
+from apex_ocr.source.apex_live import ApexLiveSource, LiveReading, LiveStatus, probe_database
 from apex_ocr.ui import branding
 from apex_ocr.ui.dev_window import DevWindow, DevWindowCallbacks
 from apex_ocr.ui.main_window import MainWindow, MainWindowCallbacks
 from apex_ocr.ui.tray import TrayIcon
-from apex_ocr.ui.zone_selector import ZoneSelector
 
 UI_REFRESH_MS = 200
 LED_WIFI_RETRY_S = 12   # panneau injoignable : nouvel essai Wi-Fi + panneau à cette cadence
-CALIBRATION_SAMPLES = 5
-CALIBRATION_SAMPLE_INTERVAL_S = 0.25
-PREVIEW_MIN_INTERVAL_S = 0.5      # aperçu de la zone dans la fenêtre dev : 2x/s max, et seulement si visible
 ERROR_LOG_REPEAT_S = 60.0         # une même erreur récurrente n'est journalisée qu'une fois par minute
 
 _REASON_LABELS = {
     StopReason.TIME_ZERO: "temps écoulé",
-    StopReason.OCR_LOST: "signal perdu",
+    StopReason.OCR_LOST: "base Apex Timing muette",
     StopReason.CANCELLED: "course annulée",
     StopReason.SOURCE_ENDED: "fin signalée par Apex Timing",
 }
-LIVE_IDLE_SLEEP_S = 0.5   # boucle OCR au repos (source directe active) : pas de capture, pas de Tesseract
-
-TESSERACT_MISSING_MSG = ("Tesseract OCR introuvable — relancer l'installateur, ou l'installer depuis "
-                         "le site UB-Mannheim (dossier par défaut C:\\Program Files\\Tesseract-OCR).")
 
 
 class App:
     def __init__(self) -> None:
         self.config = AppConfig.load()
         self.logger = setup_logging(self.config.log_retention_days, self.config.log_level)
-        engine.set_tesseract_path(self.config.tesseract_path)
+        if self.config.loaded_from_legacy:
+            self.config.save()
+            self.logger.info("Réglages repris de l'ancienne version (Apex Timing OCR).")
 
-        self.tracker = SessionTracker(
-            resync_tolerance_seconds=self.config.resync_tolerance_seconds,
-            ocr_lost_timeout_seconds=self.config.ocr_lost_timeout_seconds,
-            logger=self.logger,
-        )
+        self.tracker = SessionTracker(ocr_lost_timeout_seconds=self.config.apex_stale_seconds, logger=self.logger)
+        self.tracker.round_up = True   # afficher comme GoKarts (arrondi au supérieur)
         self.health = HealthMonitor()
         self._last_health_status: Optional[HealthStatus] = None
         self._last_output_text = ""
         self._error_count = 0
         self._last_error_wall: Optional[float] = None
-
-        self.running = False
-        self._ocr_thread: Optional[threading.Thread] = None
-        self._last_preview_wall = 0.0
-        self._last_ocr_raw: Optional[str] = None
-        self._last_capture_reason = ""      # dernière raison d'échec de capture (capture.REASON_*), "" si OK
         self._logged_errors: dict[str, float] = {}
         self._output_error_logged = False
-        self._calibration_cancel = threading.Event()
-        self._calibrating = False
-        self._testing_ocr = False
-        self._last_ocr_error = ""          # dernière erreur Tesseract/OCR (texte), "" si tout va bien
         self._health_detail = ""
-        # Source directe (base Apex Timing) : créée au start() si config.source == "apex_live" ;
-        # l'arbitre décide qui nourrit le suivi de session (elle, ou l'OCR en repli).
-        self.live_source: Optional[ApexLiveSource] = None
-        self._arbiter = SourceArbiter(self.config.apex_fallback_seconds)
+
+        self.running = False
+        self.source: Optional[ApexLiveSource] = None
+        self._source_fresh = False           # la base a répondu depuis moins de apex_stale_seconds
         self._last_source_status_text = ""
+        self._last_reading_text = ""
+        self._probing = False
 
         self.led = LedPanel(
             self.config.led_width,
@@ -124,16 +99,11 @@ class App:
         self.window.report_callback_exception = self._tk_exception
 
         dev_callbacks = DevWindowCallbacks(
-            on_refresh_windows=self._refresh_window_titles,
-            on_browse_tesseract=self._browse_tesseract,
-            on_select_zone=self._select_zone,
-            on_test_ocr=self._test_ocr,
+            on_browse_data_dir=self._browse_data_dir,
             on_start=self.start,
             on_stop=self.stop,
-            on_open_test_page=self._open_test_page,
+            on_probe=self._probe_database,
             on_config_changed=self._persist_config_from_ui,
-            on_auto_calibrate=self._auto_calibrate_threshold,
-            on_cancel_calibrate=self.cancel_calibration,
             on_clear_errors=self._clear_errors,
             on_open_logs=self._open_logs_folder,
             on_open_config=self._open_config_file,
@@ -152,12 +122,9 @@ class App:
             on_led_chunk_minutes=self._led_set_chunk_minutes,
             on_led_password=self._led_set_password,
             on_log_level=self._set_log_level,
-            on_source_changed=self._set_source,
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
-        self.dev_window.set_zone(self.config.zone)
         self.dev_window.set_led_control(self._led_wanted, self.led.status)
-        self._check_tesseract()
 
         self.tray = TrayIcon(
             on_show=lambda: self.window.after(0, self._show_window),
@@ -178,18 +145,13 @@ class App:
         self.dev_window.log("Application prête.")
         self.window.after(UI_REFRESH_MS, self._refresh_tick)
 
-        # Prod : une fois configurée, l'appli se réduit direct dans la zone
-        # de notification au lancement, sans action manuelle. Tant qu'elle
-        # n'est pas configurée, la fenêtre reste visible pour la calibration.
-        if "--minimized" in sys.argv or self.config.is_ready:
-            self.window.withdraw()
+        # Prod : l'appli se réduit direct dans la zone de notification au lancement et lit
+        # la base tout de suite ; rien à calibrer.
+        self.window.withdraw()
+        self.start()
 
-        if self.config.is_ready:
-            self.start()
-
-        # Indépendant de la config OCR : le panneau se (re)connecte tout seul
-        # au lancement (Wi-Fi compris), puis retente en arrière-plan s'il est
-        # éteint/hors de portée (voir _led_watchdog).
+        # Indépendant de la source : le panneau se (re)connecte tout seul au lancement
+        # (Wi-Fi compris), puis retente en arrière-plan s'il est éteint/hors de portée.
         if self._led_wanted:
             self.logger.info("Connexion automatique au panneau LED %s...", self.config.led_host)
             self._led_connect(self.config.led_host)
@@ -198,30 +160,6 @@ class App:
 
     def _toggle_dev_window(self) -> None:
         self.dev_window.toggle()
-
-    def _refresh_window_titles(self) -> None:
-        """Liste des fenêtres ouvertes : l'énumération prend jusqu'à quelques centaines
-        de ms -> en tâche de fond, résultat déposé dans la fenêtre dev."""
-        def work():
-            try:
-                titles = capture.list_window_titles()
-            except Exception as exc:              # jamais sans réponse : le bouton ↻ doit se réactiver
-                self._log_error_once("window_titles", exc)
-                titles = []
-            try:
-                # ``self.dev_window`` est résolu sur le thread Tk, au moment de la livraison :
-                # le premier appel part pendant la construction de DevWindow, avant que
-                # l'attribut existe (sinon le thread mourait en silence, liste vide, ↻ grisé).
-                self.window.after(0, self._guarded, self._deliver_window_titles, titles)
-            except (RuntimeError, TclError):
-                pass
-        threading.Thread(target=work, daemon=True, name="window-titles").start()
-
-    def _deliver_window_titles(self, titles: list[str]) -> None:
-        self.dev_window.set_window_titles(titles)
-        if not titles:
-            self.logger.warning("Aucune fenêtre listée (pygetwindow indisponible ?) : la liste « Fenêtre » reste vide.")
-            self.dev_window.log("Aucune fenêtre trouvée : cliquer ↻ pour réessayer.")
 
     def _open_logs_folder(self) -> None:
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -232,247 +170,77 @@ class App:
             self.config.save()
         os.startfile(CONFIG_PATH)
 
-    # ---- Tesseract ------------------------------------------------------
-
-    def _tesseract_ok(self) -> bool:
-        path = self.config.tesseract_path
-        return bool(path) and os.path.exists(path)
-
-    def _check_tesseract(self) -> None:
-        """Sans tesseract.exe l'appli ne lira jamais rien : bandeau explicite dans la
-        fenêtre principale (avec le lien de téléchargement) plutôt qu'une erreur muette."""
-        if self._tesseract_ok():
-            self.window.hide_banner()
-            return
-        self.window.show_banner(TESSERACT_MISSING_MSG, branding.TESSERACT_DOWNLOAD_URL)
-        self.logger.warning("tesseract.exe introuvable (%r) : l'OCR ne peut pas fonctionner.",
-                            self.config.tesseract_path)
-        self.dev_window.log(TESSERACT_MISSING_MSG)
-
-    # ---- actions déclenchées par l'UI --------------------------------
-
-    def _browse_tesseract(self) -> Optional[str]:
-        path = filedialog.askopenfilename(
-            title="Sélectionner tesseract.exe", filetypes=[("Executable", "*.exe"), ("Tous", "*.*")]
-        )
+    def _browse_data_dir(self) -> Optional[str]:
+        path = filedialog.askdirectory(title="Dossier des bases Apex Timing (DAYAAAAMMJJ.GO)",
+                                       initialdir=self.config.apex_data_dir or None)
         return path or None
 
     def _persist_config_from_ui(self) -> None:
+        changed = False
         for key, value in self.dev_window.current_config_values(self.config).items():
-            setattr(self.config, key, value)
-        engine.set_tesseract_path(self.config.tesseract_path)
-        self.tracker.resync_tolerance_seconds = self.config.resync_tolerance_seconds
-        self.tracker.ocr_lost_timeout_seconds = self.config.ocr_lost_timeout_seconds
+            if getattr(self.config, key) != value:
+                setattr(self.config, key, value)
+                changed = True
         self.config.save()
-        self._check_tesseract()
+        self.tracker.ocr_lost_timeout_seconds = self.config.apex_stale_seconds
+        if changed and self.running:
+            self.dev_window.log("Réglages Apex Timing modifiés : lecture relancée.")
+            self.stop()
+            self.start()
 
-    def _select_zone(self) -> None:
-        title = self.dev_window.window_var.get().strip()
-        if not title:
-            messagebox.showwarning("Attention", "Sélectionnez d'abord une fenêtre.")
-            return
-        img = capture.capture_window(title)
-        if img is None:
-            messagebox.showerror("Erreur", f"Capture impossible pour « {title} ».")
-            return
-        self.config.window_title = title
-        selector = ZoneSelector(self.dev_window, img, self.config.zone)
-        self.dev_window.wait_window(selector)
-        if selector.result:
-            self.config.zone = selector.result
-            self.config.zone_ref_size = list(img.size)  # pour remettre la zone à l'échelle si la fenêtre change de taille/DPI
-            self.dev_window.set_zone(self.config.zone)
-            self.config.save()
-            self.dev_window.log(f"Zone définie : {self.dev_window.format_zone(self.config.zone)}")
-
-    def _test_ocr(self) -> None:
-        """Capture + Tesseract (150-400 ms) en tâche de fond : la fenêtre ne gèle pas."""
-        if self._testing_ocr:
-            return
-        self._persist_config_from_ui()
-        self._testing_ocr = True
-        self.dev_window.set_testing_ocr(True)
-
-        def work():
-            img, reason = self._capture_zone_ex()
-            text, processed, error = "", None, ""
-            if img is not None:
-                try:
-                    processed = preprocess(img, self.config.threshold)
-                    text = engine.extract_text(processed)
-                except Exception as exc:
-                    error = str(exc) or type(exc).__name__
-            try:
-                self.window.after(0, self._guarded, self._on_test_ocr_done, img, processed, text, reason, error)
-            except (RuntimeError, TclError):
-                pass
-        threading.Thread(target=work, daemon=True, name="test-ocr").start()
-
-    def _on_test_ocr_done(self, img, processed, text: str, reason: str, error: str) -> None:
-        self._testing_ocr = False
-        self.dev_window.set_testing_ocr(False)
-        if img is None:
-            self.dev_window.log(f"Test OCR : capture impossible — {capture.CAPTURE_REASON_LABELS.get(reason, reason)}.")
-            return
-        self.dev_window.set_preview_image(img, processed)
-        if error:
-            self.dev_window.log(f"Test OCR : erreur Tesseract — {error}")
-            return
-        self.dev_window.set_last_ocr_text(text.strip())
-        reading = parse_strict(text)
-        if reading is None:
-            self.dev_window.log(
-                f"Test OCR : « {text.strip()} » (format non reconnu)" if text.strip() else "Test OCR : aucun texte lu."
-            )
-            return
-        laps = f" ({reading.laps_done}/{reading.laps_total})" if reading.has_laps else ""
-        self.dev_window.log(f"Test OCR : « {text.strip()} » -> {reading.time_text}{laps} ✓")
-
-    def _auto_calibrate_threshold(self) -> None:
-        if not self.config.window_title or not self.config.zone:
-            messagebox.showwarning("Attention", "Sélectionnez une fenêtre et définissez la zone d'abord.")
-            return
-        if self._calibrating:
-            self.dev_window.log("Calibration déjà en cours.")
-            return
-        self._calibrating = True
-        self._calibration_cancel.clear()
-        self.dev_window.set_calibrating(True)
-        self.dev_window.log(f"Calibration automatique du seuil en cours ({CALIBRATION_SAMPLES} échantillons)...")
-        threading.Thread(target=self._run_calibration, daemon=True).start()
-
-    def cancel_calibration(self) -> None:
-        """Interrompt la calibration en cours (sans effet s'il n'y en a pas)."""
-        self._calibration_cancel.set()
-
-    def _run_calibration(self) -> None:
-        samples: list[Image.Image] = []
-        for _ in range(CALIBRATION_SAMPLES):
-            img = self._capture_zone()
-            if img is not None:
-                samples.append(img)
-            time.sleep(CALIBRATION_SAMPLE_INTERVAL_S)
-        last_pct = [0]
-
-        def on_progress(done: int, total: int) -> None:
-            pct = done * 100 // total
-            if pct // 20 > last_pct[0] // 20:   # un message tous les 20 %
-                last_pct[0] = pct
-                self.window.after(0, self.dev_window.log, f"Calibration : {pct} %")
-
-        try:
-            best = calibrate_threshold(samples, on_progress=on_progress, cancel=self._calibration_cancel)
-        except Exception as exc:
-            self.logger.exception("Calibration : erreur")
-            best = None
-            self.window.after(0, self.dev_window.log, f"Calibration : erreur ({exc}).")
-        self.window.after(0, self._on_calibration_done, best)
-
-    def _on_calibration_done(self, best: Optional[int]) -> None:
-        self._calibrating = False
-        self.dev_window.set_calibrating(False)
-        if self._calibration_cancel.is_set():
-            self.dev_window.log("Calibration annulée.")
-            return
-        if best is None:
-            self.dev_window.log("Calibration échouée : aucun seuil ne donne une lecture valide et stable. Vérifiez la zone.")
-            return
-        self.config.threshold = best
-        self.dev_window.set_threshold(best)
-        self.config.save()
-        self.dev_window.log(f"Seuil calibré automatiquement : {best}")
+    # ---- source Apex Timing ---------------------------------------------
 
     def start(self) -> None:
         if self.running:
             return
-        use_live = self.config.source == "apex_live"
-        if not self.config.ocr_ready and not use_live:
-            messagebox.showwarning("Attention", "Sélectionnez une fenêtre et définissez la zone.")
-            return
-        self._persist_config_from_ui()
-        # Un précédent thread OCR peut encore finir son sleep après un stop() : on
-        # l'attend plutôt que de faire tourner deux boucles en parallèle.
-        if self._ocr_thread is not None and self._ocr_thread.is_alive():
-            self._ocr_thread.join(timeout=max(0.05, self.config.ocr_interval_ms / 1000) + 1.0)
+        self._persist_config_from_ui()   # valeurs des champs (sans effet de bord : pas encore en marche)
         self.running = True
         self.tracker.reset()
-        self._arbiter.reset()
-        self.tracker.round_up = False
-        self.dev_window.set_running(True)
-        if use_live:
-            self._start_live_source()
-        if self.config.ocr_ready:
-            self.dev_window.log("OCR démarré." + (" (en repli derrière la base Apex Timing)" if use_live else ""))
-            self._ocr_thread = threading.Thread(target=self._ocr_loop, daemon=True, name="ocr")
-            self._ocr_thread.start()
-        else:
-            self.dev_window.log("OCR non calibré (fenêtre/zone) : aucun repli possible si la base Apex Timing tombe.")
-
-    def stop(self) -> None:
-        self.running = False
-        self._stop_live_source()
-        self.dev_window.set_running(False)
-        self.dev_window.log("OCR arrêté.")
-
-    # ---- source directe (base Apex Timing) --------------------------------
-
-    def _start_live_source(self) -> None:
-        self.live_source = ApexLiveSource(
+        self._source_fresh = False
+        self.source = ApexLiveSource(
             self.logger, self.config.apex_data_dir, host=self.config.apex_db_host,
             user=self.config.apex_db_user, password=self.config.apex_db_password,
             fbclient_path=self.config.apex_fbclient_path, poll_s=self.config.apex_poll_ms / 1000,
         )
-        self.live_source.start()
-        self.dev_window.log("Source Apex Timing : lecture de la base en cours...")
+        self.source.start()
+        self.dev_window.set_running(True)
+        self.dev_window.log("Lecture de la base Apex Timing démarrée.")
 
-    def _stop_live_source(self) -> None:
-        src, self.live_source = self.live_source, None
+    def stop(self) -> None:
+        self.running = False
+        src, self.source = self.source, None
         if src is not None:
             src.stop()
-        self._arbiter.reset()
-        self.tracker.round_up = False
-        self._set_source_status("")
+        self.tracker.reset()
+        self._source_fresh = False
+        self.dev_window.set_running(False)
+        self._set_source_status("Lecture arrêtée", branding.STATUS_GREY)
+        self.dev_window.log("Lecture de la base Apex Timing arrêtée.")
 
-    def _set_source(self, source: str) -> None:
-        """Bascule OCR <-> base Apex Timing depuis la fenêtre dev (mémorisée)."""
-        if source == self.config.source:
-            return
-        self.config.source = source
-        self.config.save()
-        self.logger.info("Source du chrono : %s", source)
-        if self.running:
-            self.stop()
-        if self.config.is_ready:
-            self.start()
-
-    def _set_source_status(self, text: str, color: Optional[str] = None) -> None:
-        if text != self._last_source_status_text:
-            self._last_source_status_text = text
-            self.dev_window.set_source_status(text, color)
-
-    def _poll_live_source(self, now: float) -> None:
-        """Appelé à chaque rafraîchissement UI : lit la dernière lecture de la base, décide
-        source directe / repli OCR, et nourrit le suivi de session comme le ferait l'OCR."""
-        src = self.live_source
+    def _poll_source(self, now: float) -> None:
+        """Appelé à chaque rafraîchissement UI : lit la dernière lecture de la base et nourrit
+        le suivi de session (départ confirmé sur 2 lectures décroissantes, puis horloge recalée
+        exactement à chaque lecture, pause gelée, fin immédiate)."""
+        src = self.source
         if src is None:
             return
         reading, last_ok = src.latest()
-        switched = self._arbiter.update(now, last_ok)
-        if switched == "live":
-            self.tracker.round_up = True
-            self.logger.info("Source directe Apex Timing active : l'OCR est en pause (aucun appel Tesseract).")
-            self.dev_window.log("Base Apex Timing lue : l'OCR passe en repli.")
-        elif switched == "ocr":
-            self.tracker.round_up = False
-            self.tracker.set_paused(False, now)
-            self.logger.warning("Base Apex Timing muette depuis %.0f s (%s) : repli sur l'OCR.",
-                                self.config.apex_fallback_seconds, src.status_detail or src.status.name)
-            self.dev_window.log("Base Apex Timing injoignable : repli sur l'OCR." if self.config.ocr_ready
-                                else "Base Apex Timing injoignable et OCR non calibré : plus de lecture.")
-        self._refresh_source_status(src, reading)
-        if not self._arbiter.use_live:
-            if not self.config.ocr_ready:
-                self.health.record_capture_failure()   # personne ne lit plus rien : le dire (rouge)
+        fresh = last_ok > 0 and now - last_ok <= self.config.apex_stale_seconds
+        if fresh != self._source_fresh:
+            self._source_fresh = fresh
+            if fresh:
+                self.logger.info("Base Apex Timing lue : suivi des sessions actif.")
+            else:
+                self.logger.warning("Base Apex Timing muette depuis %.0f s (%s).",
+                                    self.config.apex_stale_seconds, src.status_detail or src.status.name)
+                self.tracker.set_paused(False, now)
+        self._refresh_source_status(src, reading, fresh)
+        if not fresh:
+            self.health.record_capture_failure()
+            if self.tracker.state == SessionState.RUNNING:
+                # Plus de nouvelles : l'horloge interne continue quelques secondes, puis la
+                # session est abandonnée (« base muette ») comme un signal perdu.
+                self._handle_events(self.tracker.on_lenient_reading(LenientReading(None, None, None), now))
             return
         self.health.record_capture_success()
         if reading is None:
@@ -490,58 +258,58 @@ class App:
         if not reading.paused:
             self.tracker.sync_exact(reading.remaining_s, now)   # sans effet hors RUNNING
 
-    def _refresh_source_status(self, src: ApexLiveSource, reading) -> None:
-        if src.status == LiveStatus.CONNECTED and self._arbiter.use_live:
+    def _set_source_status(self, text: str, color: Optional[str] = None) -> None:
+        if text != self._last_source_status_text:
+            self._last_source_status_text = text
+            self.dev_window.set_source_status(text, color)
+
+    def _refresh_source_status(self, src: ApexLiveSource, reading: Optional[LiveReading], fresh: bool) -> None:
+        if src.status == LiveStatus.CONNECTED and fresh:
             if reading is None:
-                self._set_source_status("Base Apex Timing : connectée, aucune session en cours", branding.STATUS_GREEN)
+                self._set_source_status(f"Connectée ({os.path.basename(src.db_path)}), aucune session en cours",
+                                        branding.STATUS_GREEN)
+                text = "—"
             else:
-                self._set_source_status(
-                    f"Base Apex Timing : session {reading.session_idx}" + (" en pause" if reading.paused else " en cours"),
-                    branding.STATUS_GREEN)
+                self._set_source_status(f"Connectée ({os.path.basename(src.db_path)}), session {reading.session_idx}"
+                                        + (" en pause" if reading.paused else " en cours"), branding.STATUS_GREEN)
+                laps = f"  {reading.laps_done}/{reading.laps_total}" if reading.laps_total is not None else ""
+                text = f"{reading.time_text}{laps}"
         elif src.status in (LiveStatus.CONNECTING, LiveStatus.CONNECTED):
-            self._set_source_status("Base Apex Timing : connexion...", branding.STATUS_AMBER)
+            self._set_source_status("Connexion...", branding.STATUS_AMBER)
+            text = "—"
         else:
-            detail = f" ({src.status_detail})" if src.status_detail else ""
-            fallback = "repli OCR" if self.config.ocr_ready else "OCR non calibré : aucune lecture"
-            self._set_source_status(f"Base Apex Timing indisponible{detail} — {fallback}", branding.STATUS_AMBER)
+            detail = f" — {src.status_detail}" if src.status_detail else ""
+            self._set_source_status(f"Indisponible{detail}", branding.PRIMARY_RED)
+            text = "—"
+        if text != self._last_reading_text:
+            self._last_reading_text = text
+            self.dev_window.set_last_reading(text)
 
-    # ---- boucle OCR (thread d'arrière-plan) ---------------------------
+    def _probe_database(self) -> None:
+        """« Tester la base » : ouverture ponctuelle en lecture seule, en tâche de fond."""
+        if self._probing:
+            return
+        self._persist_config_from_ui()
+        self._probing = True
+        self.dev_window.set_probing(True)
+        self.dev_window.log("Test de la base Apex Timing...")
+        cfg = self.config
 
-    def _capture_zone(self) -> Optional[Image.Image]:
-        return self._capture_zone_ex()[0]
-
-    def _capture_zone_ex(self) -> tuple[Optional[Image.Image], str]:
-        """(image de la zone, raison d'échec capture.REASON_* ou "")."""
-        if not self.config.window_title or not self.config.zone:
-            return None, capture.REASON_WINDOW_NOT_FOUND
-        return capture.capture_zone_ex(self.config.window_title, tuple(self.config.zone), self.config.zone_ref_size)
-
-    def _read_raw_text(self, img: Image.Image) -> str:
-        processed = preprocess(img, self.config.threshold)
-        return engine.extract_text(processed)
-
-    def _ocr_loop(self) -> None:
-        while self.running:
-            if self._arbiter.use_live:
-                # Source directe active : ni capture ni Tesseract (CPU au repos) ; la boucle
-                # reprend d'elle-même dès que l'arbitre repasse sur l'OCR.
-                time.sleep(LIVE_IDLE_SLEEP_S)
-                continue
+        def work():
+            report = probe_database(cfg.apex_data_dir, cfg.apex_db_host, cfg.apex_db_user, cfg.apex_db_password,
+                                    cfg.apex_fbclient_path)
             try:
-                img, reason = self._capture_zone_ex()
-                if img is None:
-                    self.window.after(0, self._guarded, self._on_capture_failure, reason)
-                else:
-                    text = self._read_raw_text(img)
-                    self.window.after(0, self._guarded, self._on_capture_success, img, text)
-            except Exception as exc:
-                try:
-                    self.window.after(0, self._guarded, self._on_capture_error, exc)
-                except (RuntimeError, TclError):  # appli en cours de fermeture
-                    break
-            time.sleep(max(0.05, self.config.ocr_interval_ms / 1000))
+                self.window.after(0, self._on_probe_done, report)
+            except (RuntimeError, TclError):
+                pass
+        threading.Thread(target=work, daemon=True, name="apex-probe").start()
 
-    # ---- garde-fous : une exception ne tue ni la boucle Tk ni la boucle OCR ----
+    def _on_probe_done(self, report: str) -> None:
+        self._probing = False
+        self.dev_window.set_probing(False)
+        self.dev_window.log(f"Test de la base : {report}")
+
+    # ---- garde-fous : une exception ne tue pas la boucle Tk ------------------
 
     def _guarded(self, fn, *args) -> None:
         try:
@@ -561,74 +329,21 @@ class App:
     def _tk_exception(self, exc_type, exc_value, exc_tb) -> None:
         self._log_error_once("tk_callback", exc_value if isinstance(exc_value, Exception) else Exception(str(exc_value)))
 
-    def _on_capture_failure(self, reason: str = "") -> None:
-        self.health.record_capture_failure()
-        self._set_capture_reason(reason)
-
-    def _on_capture_error(self, exc: Exception) -> None:
-        self.health.record_capture_failure()
-        self._last_ocr_error = str(exc).strip().splitlines()[0][:120] if str(exc).strip() else type(exc).__name__
-        self._log_error_once("ocr", exc)
-
-    def _set_capture_reason(self, reason: str) -> None:
-        """Raison d'échec de la capture (exposée à l'UI via _last_capture_reason) ;
-        journalisée à chaque changement, pas à chaque frame."""
-        if reason == self._last_capture_reason:
-            return
-        self._last_capture_reason = reason
-        if reason:
-            self.logger.warning("Capture impossible : %s", capture.CAPTURE_REASON_LABELS.get(reason, reason))
-        else:
-            self.logger.info("Capture rétablie.")
-
-    def _on_capture_success(self, img: Image.Image, text: str) -> None:
-        self.health.record_capture_success()
-        self._set_capture_reason("")
-        self._last_ocr_error = ""
-        now = time.monotonic()
-        raw = text.strip()
-        changed = raw != self._last_ocr_raw   # le texte brut n'est journalisé qu'à son changement
-        self._last_ocr_raw = raw
-        # L'aperçu (redimensionnement + PhotoImage) ne vaut que fenêtre dev visible, 2x/s max ;
-        # l'image prétraitée (celle vue par Tesseract) n'est recalculée que pour lui.
-        if self.dev_window.winfo_viewable():
-            if now - self._last_preview_wall >= PREVIEW_MIN_INTERVAL_S:
-                self._last_preview_wall = now
-                self.dev_window.set_preview_image(img, preprocess(img, self.config.threshold))
-            if changed:
-                self.dev_window.set_last_ocr_text(raw)
-        if self._arbiter.use_live:
-            return   # une lecture OCR en transit pendant le basculement : la base fait foi
-        if self.tracker.state == SessionState.RUNNING:
-            reading = parse_lenient(text)
-            if changed:
-                self.logger.debug("OCR brut=%r → temps=%s tours=%s/%s",
-                                  raw, reading.time_text, reading.laps_done, reading.laps_total)
-            events = self.tracker.on_lenient_reading(reading, now)
-        else:
-            strict = parse_strict(text)
-            if strict is not None and changed:
-                self.logger.debug("OCR brut=%r → strict temps=%s tours=%s/%s",
-                                  raw, strict.time_text, strict.laps_done, strict.laps_total)
-            events = self.tracker.on_strict_reading(strict, now)
-
-        self._handle_events(events)
-
     def _handle_events(self, events: list[SessionEvent]) -> None:
         for event in events:
             if event == SessionEvent.ARMED:
-                self.dev_window.log("Chiffre détecté — en attente de confirmation (doit diminuer).")
+                self.dev_window.log("Session vue dans la base — en attente que le chrono descende.")
             elif event == SessionEvent.STARTED:
-                self.dev_window.log("Départ détecté — minuterie démarrée.")
+                self.dev_window.log("Départ détecté — décompte démarré.")
             elif event == SessionEvent.RESYNCED:
-                self.dev_window.log("Resynchronisation sur lecture OCR (écart détecté).")
+                self.dev_window.log("Resynchronisation sur la base (écart détecté).")
             elif event == SessionEvent.STOPPED:
                 result = self.tracker.last_completed
                 label = _REASON_LABELS[result.reason]
                 self.dev_window.log(f"Session terminée ({label}) : {result.time_text}")
                 self.logger.info("Session terminée (%s) : %s", result.reason.name, result.time_text)
 
-    # ---- rafraîchissement UI (indépendant de la boucle OCR) ------------
+    # ---- rafraîchissement UI --------------------------------------------
 
     def _refresh_tick(self) -> None:
         # Quoi qu'il arrive dans le rafraîchissement, le tick suivant est planifié :
@@ -645,7 +360,7 @@ class App:
 
     def _refresh_once(self) -> None:
         now = time.monotonic()
-        self._poll_live_source(now)
+        self._poll_source(now)
         if self.tracker.state == SessionState.RUNNING:
             self._handle_events(self.tracker.tick(now))
 
@@ -877,38 +592,31 @@ class App:
         self.config.led_password = password
         self.config.save()
         self.led.set_password(password)
-        self.dev_window.log("Mot de passe du panneau LED enregistré (reconnexion si nécessaire).")
+        self.dev_window.log("Mot de passe du panneau LED modifié (reconnexion).")
+
+    # ---- journal ---------------------------------------------------------
 
     def _set_log_level(self, level: str) -> None:
         self.config.log_level = level
         self.config.save()
         set_log_level(level)
-        self.dev_window.log(f"Niveau de log : {level}")
+        self.dev_window.log(f"Niveau de journal : {level}.")
+
+    # ---- santé -----------------------------------------------------------
 
     def _health_detail_text(self, status: HealthStatus) -> str:
         """Ce qui ne va pas, en clair (fenêtre principale, fenêtre dev, infobulle systray)."""
-        if self.live_source is not None and self._arbiter.use_live:
-            return ""   # la base Apex Timing fait foi : l'état de l'OCR n'a pas d'importance
-        if not self._tesseract_ok():
-            return "tesseract.exe introuvable : l'OCR ne peut pas fonctionner."
         if status != HealthStatus.ERROR:
             return ""
-        if self.live_source is not None and not self.config.ocr_ready:
-            return f"Base Apex Timing injoignable ({self.live_source.status_detail or 'sans détail'}) et OCR non calibré."
-        if self._last_capture_reason == capture.REASON_WINDOW_NOT_FOUND:
-            title = self.config.window_title or "(aucune)"
-            return f"Fenêtre « {title} » introuvable : Apex Timing fermé ou titre différent ?"
-        if self._last_capture_reason:
-            label = capture.CAPTURE_REASON_LABELS.get(self._last_capture_reason, self._last_capture_reason)
-            return label[0].upper() + label[1:] + "."
-        if self._last_ocr_error:
-            return f"Tesseract : {self._last_ocr_error}"
-        return "Capture ou lecture en échec depuis trop longtemps (voir le journal)."
+        if not self.running:
+            return "Lecture de la base arrêtée (fenêtre dev → Démarrer)."
+        src = self.source
+        detail = (src.status_detail if src is not None else "") or "sans réponse"
+        return f"Base Apex Timing injoignable : {detail}"
 
     def _apply_health_status(self, status: HealthStatus) -> None:
-        # Pas de notification Windows ici (trop intrusif : se déclenchait à
-        # chaque changement de fenêtre) -> l'icône colorée dans la zone de
-        # notification suffit, l'historique reste dans le log.
+        # Pas de notification Windows ici (trop intrusif) -> l'icône colorée dans la
+        # zone de notification suffit, l'historique reste dans le log.
         detail = self._health_detail_text(status)
         if status != self._last_health_status or detail != self._health_detail:
             self._health_detail = detail
@@ -941,17 +649,6 @@ class App:
         if elapsed < 3600:
             return f"{elapsed // 60}min {elapsed % 60}s{suffix}"
         return f"{elapsed // 3600}h {(elapsed % 3600) // 60}min{suffix}"
-
-    # ---- page de test ----------------------------------------------------
-
-    def _open_test_page(self) -> None:
-        """Ouvre test_timer.html (livrée avec l'appli) dans le navigateur par défaut."""
-        path = test_page_path()
-        if not path or not os.path.exists(path):
-            self.dev_window.log("Page de test introuvable (test_timer.html).")
-            return
-        webbrowser.open(Path(path).as_uri())
-        self.dev_window.log(f"Page de test ouverte dans le navigateur : {path}")
 
     # ---- cycle de vie ----------------------------------------------------
 
@@ -987,7 +684,9 @@ class App:
 
     def _really_quit(self) -> None:
         self.running = False
-        self._stop_live_source()
+        src, self.source = self.source, None
+        if src is not None:
+            src.stop()
         self._persist_config_from_ui()
         self.power.stop()
         self.led.shutdown()

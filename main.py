@@ -1,11 +1,10 @@
-"""Point d'entrée de l'application Apex Timing OCR."""
+"""Point d'entrée de l'application New Kart - Panneau led."""
 import sys
 
 if sys.platform == "win32":
     import ctypes
 
-    # Per-monitor v2 : la capture de fenêtre et ses coordonnées restent en pixels réels
-    # même sur un 2e écran à une autre échelle (sinon la zone calibrée se décale).
+    # Per-monitor v2 : rendu net des fenêtres sur un 2e écran à une autre échelle.
     _DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
     try:
         if not ctypes.windll.user32.SetProcessDpiAwarenessContext(_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2):

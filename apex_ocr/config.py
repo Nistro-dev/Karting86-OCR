@@ -4,25 +4,11 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Optional
 
 from apex_ocr.led.protocol import DEFAULT_HOST, DEFAULT_PASSWORD
-from apex_ocr.paths import CONFIG_PATH
+from apex_ocr.paths import CONFIG_PATH, LEGACY_CONFIG_PATH
 
-_TESSERACT_SEARCH_PATHS = [
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    "/opt/homebrew/bin/tesseract",
-    "/usr/local/bin/tesseract",
-    "/usr/bin/tesseract",
-]
-
-
-def find_tesseract() -> str:
-    for path in _TESSERACT_SEARCH_PATHS:
-        if os.path.exists(path):
-            return path
-    return ""
+DEFAULT_APEX_DATA_DIR = r"C:\ApexTiming\Data"
 
 
 def _looks_like_ipv4(value) -> bool:
@@ -38,17 +24,15 @@ def _looks_like_ipv4(value) -> bool:
 
 @dataclass
 class AppConfig:
-    window_title: str = ""
-    zone: Optional[list[int]] = None
-    # Taille (largeur, hauteur) de la fenêtre au moment où la zone a été définie :
-    # si la fenêtre est ensuite capturée à une autre taille (autre écran/DPI,
-    # redimensionnée), la zone est mise à l'échelle proportionnellement.
-    zone_ref_size: Optional[list[int]] = None
-    tesseract_path: str = field(default_factory=find_tesseract)
-    ocr_interval_ms: int = 200
-    threshold: int = 127
-    resync_tolerance_seconds: int = 3
-    ocr_lost_timeout_seconds: float = 10.0
+    # Source du chrono : la base Firebird de GoKarts / GoServer (Apex Timing), lue en lecture
+    # seule (voir apex_ocr/source/apex_live.py et docs/apex_findings.md).
+    apex_data_dir: str = DEFAULT_APEX_DATA_DIR   # dossier des bases journalières DAYAAAAMMJJ.GO
+    apex_db_host: str = "localhost"
+    apex_db_user: str = "SYSDBA"
+    apex_db_password: str = "masterkey"
+    apex_fbclient_path: str = ""                 # fbclient.dll 64 bits ; vide = détection automatique
+    apex_poll_ms: int = 500                      # cadence de lecture de la base
+    apex_stale_seconds: float = 10.0             # base muette depuis ce délai -> statut rouge, session abandonnée
     log_retention_days: int = 30
     # Panneau LED Wi-Fi (RHX8 64×16 à 8 couleurs, voir apex_ocr/led) : à chaque
     # lancement l'appli rejoint elle-même le réseau « RHX8-… » du panneau et s'y
@@ -71,51 +55,35 @@ class AppConfig:
     led_laps_only: bool = False
     led_idle_clock: bool = True  # hors course : afficher l'heure (sinon écran noir)
     led_rotate_180: bool = False  # panneau monté tête en bas : toute l'image est tournée de 180°
-    log_level: str = "INFO"  # DEBUG (lectures OCR brutes) activable à chaud dans la fenêtre dev
-    # Source du chrono : "ocr" (capture d'écran + Tesseract) ou "apex_live" (lecture directe de la
-    # base Firebird de GoKarts/GoServer, voir apex_ocr/source/apex_live.py et docs/apex_findings.md ;
-    # repli automatique sur l'OCR si la base ne répond plus). Lecture seule, compte Firebird par défaut.
-    source: str = "ocr"
-    apex_data_dir: str = r"C:\ApexTiming\Data"   # dossier des bases journalières DAYAAAAMMJJ.GO
-    apex_db_host: str = "localhost"
-    apex_db_user: str = "SYSDBA"
-    apex_db_password: str = "masterkey"
-    apex_fbclient_path: str = ""                 # fbclient.dll 64 bits ; vide = détection automatique
-    apex_poll_ms: int = 500
-    apex_fallback_seconds: float = 10.0         # base muette depuis ce délai -> repli OCR
+    log_level: str = "INFO"  # DEBUG activable à chaud dans la fenêtre dev
 
     @classmethod
     def load(cls) -> "AppConfig":
+        """Config du dossier de l'appli ; à défaut, celle d'une version 2.x (« Apex Timing OCR »)
+        dont les réglages du panneau LED sont repris tels quels."""
         cfg = cls()
-        if os.path.exists(CONFIG_PATH):
+        path = CONFIG_PATH if os.path.exists(CONFIG_PATH) else LEGACY_CONFIG_PATH
+        if os.path.exists(path):
             try:
                 # utf-8-sig : un config.json réenregistré avec un BOM (Bloc-notes, PowerShell)
-                # doit rester lisible, sinon toute la calibration repart aux valeurs par défaut.
-                with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+                # doit rester lisible, sinon tout repart aux valeurs par défaut.
+                with open(path, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
             except (json.JSONDecodeError, IOError):
                 data = {}
-            # Les clés inconnues (réglages supprimés : « external_* » de l'ancien affichage
-            # externe, « led_address » du panneau Bluetooth...) sont ignorées sans erreur.
+            # Les clés inconnues (réglages OCR des versions 2.x : window_title, zone, threshold,
+            # tesseract_path..., « external_* », « led_address »...) sont ignorées sans erreur.
             for key, value in data.items():
                 if hasattr(cfg, key):
                     setattr(cfg, key, value)
-            # Ancienne config (panneau Bluetooth) : « led_address » n'existe plus.
-            # Une IP y a peut-être été saisie -> reprise comme hôte ; une adresse
-            # BLE (AA:BB:...) est ignorée.
             if "led_host" not in data and _looks_like_ipv4(data.get("led_address")):
                 cfg.led_host = data["led_address"].strip()
         return cfg
 
+    @property
+    def loaded_from_legacy(self) -> bool:
+        return not os.path.exists(CONFIG_PATH) and os.path.exists(LEGACY_CONFIG_PATH)
+
     def save(self) -> None:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2)
-
-    @property
-    def ocr_ready(self) -> bool:
-        return bool(self.window_title and self.zone)
-
-    @property
-    def is_ready(self) -> bool:
-        """Peut démarrer seule au lancement : OCR calibré, ou source directe choisie."""
-        return self.ocr_ready or self.source == "apex_live"

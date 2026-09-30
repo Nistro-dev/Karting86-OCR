@@ -1,19 +1,15 @@
 @echo off
 chcp 65001 >nul
 echo ========================================
-echo   Installation Apex Timing OCR
+echo   Installation New Kart - Panneau led (sources)
 echo ========================================
 echo.
 
-echo [1/3] Installation de Python...
+echo [1/2] Installation de Python...
 winget install Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
 echo.
 
-echo [2/3] Installation de Tesseract OCR...
-winget install UB-Mannheim.TesseractOCR -e --accept-source-agreements --accept-package-agreements
-echo.
-
-echo [3/3] Installation des dependances Python...
+echo [2/2] Installation des dependances Python...
 py -m pip install --upgrade pip
 py -m pip install -r "%~dp0requirements.txt"
 
@@ -28,5 +24,6 @@ echo.
 echo ========================================
 echo   Installation terminee !
 echo   Lancez run.bat pour demarrer.
+echo   (Le serveur Firebird d'Apex Timing doit etre present sur ce PC.)
 echo ========================================
 pause
