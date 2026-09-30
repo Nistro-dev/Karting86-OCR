@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoUrl = "https://github.com/Nistro-dev/Karting86-OCR.git"
-$workDir = "$env:TEMP\ApexOCR_Build"
+$workDir = "$env:TEMP\NewKartPanneauLed_Build"
 $installedPython = $false
 $installedInnoSetup = $false
 $installedGit = $false
@@ -77,24 +77,20 @@ Write-Step 6 $totalSteps "Generation de l'icone et compilation de l'executable..
 py build\make_icon.py
 py build\make_installer_branding.py
 py -m PyInstaller --noconfirm --clean --onefile --windowed `
-    --name "ApexTimingOCR" `
+    --name "NewKartPanneauLed" `
     --icon "assets\icon.ico" `
     --collect-all customtkinter `
+    --hidden-import firebird.driver --hidden-import firebird.base `
+    --copy-metadata firebird-driver --copy-metadata firebird-base `
     --add-data "apex_ocr\ui\theme_newkart.json;apex_ocr\ui" `
     --add-data "apex_ocr\led\rgb_template.bin;apex_ocr\led" `
-    --add-data "test_timer.html;." `
     --add-data "assets\logo_favicon.png;assets" `
     --add-data "assets\logo_square.png;assets" `
     --add-data "assets\logo_round.png;assets" `
     main.py
 
 # ---- 7. Build installateur ----
-Write-Step 7 $totalSteps "Installeur Tesseract OCR (embarque) + compilation de l'installateur (Inno Setup)..."
-& powershell -NoProfile -ExecutionPolicy Bypass -File build\fetch_tesseract.ps1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERREUR: installeur Tesseract indisponible, build arrete." -ForegroundColor Red
-    exit 1
-}
+Write-Step 7 $totalSteps "Compilation de l'installateur (Inno Setup)..."
 & $isccExe build\installer.iss
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERREUR: Inno Setup a echoue." -ForegroundColor Red
@@ -102,9 +98,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Copier l'installateur sur le Bureau avant nettoyage
-$installerSrc = "$workDir\dist_installer\ApexTimingOCR_Setup.exe"
+$installerSrc = "$workDir\dist_installer\NewKartPanneauLed_Setup.exe"
 $desktop = [Environment]::GetFolderPath("Desktop")
-$installerDst = "$desktop\ApexTimingOCR_Setup.exe"
+$installerDst = "$desktop\NewKartPanneauLed_Setup.exe"
 if (Test-Path $installerSrc) {
     Copy-Item $installerSrc $installerDst -Force
     Write-Host "`n  Installateur copie sur le Bureau : $installerDst" -ForegroundColor Green

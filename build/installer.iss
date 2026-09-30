@@ -1,14 +1,13 @@
-#define MyAppName "Apex Timing OCR"
-#define MyAppVersion "2.8.0"
-#define MyAppExeName "ApexTimingOCR.exe"
+#define MyAppName "New Kart - Panneau led"
+#define MyAppVersion "3.0.0"
+#define MyAppExeName "NewKartPanneauLed.exe"
 #define MyAppPublisher "CodeForgeStudio"
 #define MyAppPublisherURL "https://codeforgestudio.fr"
-#define TaskName "ApexTimingOCR"
+#define TaskName "NewKartPanneauLed"
+#define LegacyTaskName "ApexTimingOCR"
 
-; Tesseract OCR (UB-Mannheim) est embarqué dans l'installateur : vendor\tesseract-setup.exe
-; est téléchargé par build.bat / build_and_cleanup.ps1 avant la compilation.
-; Il s'installe dans Program Files (son installeur NSIS exige l'élévation : une seule
-; invite UAC, uniquement si Tesseract est absent). L'appli reste installée par utilisateur.
+; L'appli lit la base Firebird de GoKarts (Apex Timing) sur le PC de chrono : rien d'autre à
+; installer (le serveur Firebird et son fbclient.dll 64 bits sont ceux d'Apex Timing).
 
 [Setup]
 AppId={{123CA05A-BE0C-4EF6-8DDD-814ED944A3D3}
@@ -21,7 +20,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist_installer
-OutputBaseFilename=ApexTimingOCR_Setup
+OutputBaseFilename=NewKartPanneauLed_Setup
 SetupIconFile=..\assets\icon.ico
 WizardImageFile=installer_assets\wizard_image.bmp
 WizardSmallImageFile=installer_assets\wizard_small.bmp
@@ -36,22 +35,20 @@ Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Créer un raccourci sur le Bureau"; GroupDescription: "Raccourcis :"; Flags: unchecked
-Name: "startup"; Description: "Lancer Apex Timing OCR à l'ouverture de session et le relancer automatiquement s'il s'arrête (tâche planifiée)"; GroupDescription: "Démarrage :"
+Name: "startup"; Description: "Lancer {#MyAppName} à l'ouverture de session et le relancer automatiquement s'il s'arrête (tâche planifiée)"; GroupDescription: "Démarrage :"
 
 [Files]
-Source: "..\dist\ApexTimingOCR.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\test_timer.html"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "startup_task.xml"; DestDir: "{app}"; Flags: ignoreversion
-; Installeur Tesseract embarqué, extrait dans {tmp} et supprimé après l'installation
-Source: "vendor\tesseract-setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [InstallDelete]
-; Ancien raccourci de démarrage (versions <= 2.5.3) : remplacé par la tâche planifiée
-Type: files; Name: "{userstartup}\{#MyAppName}.lnk"
+; Versions <= 2.x (« Apex Timing OCR ») : exe, page de test et raccourci de démarrage
+Type: files; Name: "{app}\ApexTimingOCR.exe"
+Type: files; Name: "{app}\test_timer.html"
+Type: files; Name: "{userstartup}\Apex Timing OCR.lnk"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Page de test du chrono"; Filename: "{app}\test_timer.html"
 Name: "{group}\Désinstaller {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
@@ -62,47 +59,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Lancer {#MyAppName}"; Flags: no
 Filename: "schtasks.exe"; Parameters: "/Delete /TN ""{#TaskName}"" /F"; Flags: runhidden; RunOnceId: "DelTask"
 
 [Code]
-const
-  TesseractUrl = 'https://github.com/UB-Mannheim/tesseract/releases';
-
-function TesseractExe(): String;
-begin
-  Result := ExpandConstant('{pf}\Tesseract-OCR\tesseract.exe');
-  if not FileExists(Result) then
-    Result := ExpandConstant('{pf32}\Tesseract-OCR\tesseract.exe');
-end;
-
-function TesseractInstalled(): Boolean;
-begin
-  Result := FileExists(TesseractExe());
-end;
-
-{ Installe Tesseract en silencieux depuis l'installeur embarqué. Son installeur NSIS
-  exige l'élévation : ShellExec déclenche l'invite UAC (Exec échouerait avec le code 740). }
-procedure InstallTesseract();
-var
-  SetupPath: String;
-  ResultCode: Integer;
-  Ok: Boolean;
-begin
-  SetupPath := ExpandConstant('{tmp}\tesseract-setup.exe');
-  WizardForm.StatusLabel.Caption := 'Installation de Tesseract OCR (moteur de reconnaissance de caractères)...';
-  WizardForm.Update;
-  Ok := ShellExec('', SetupPath, '/S', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if Ok and (ResultCode = 0) and TesseractInstalled() then
-    Log('Tesseract installé : ' + TesseractExe())
-  else
-  begin
-    Log(Format('Installation de Tesseract échouée (ShellExec=%d, code=%d)', [Integer(Ok), ResultCode]));
-    MsgBox('Tesseract OCR n''a pas pu être installé automatiquement (code ' + IntToStr(ResultCode) + ').' + #13#10#13#10
-      + 'Sans lui, l''application ne peut pas lire le chrono.' + #13#10
-      + 'Installez-le à la main (installeur Windows 64 bits, dossier par défaut C:\Program Files\Tesseract-OCR) :' + #13#10
-      + TesseractUrl + #13#10#13#10
-      + 'Une copie de l''installeur se trouve ici jusqu''à la fin de cette installation :' + #13#10 + SetupPath,
-      mbError, MB_OK);
-  end;
-end;
-
 { Tâche planifiée : lancement à l'ouverture de session + relance automatique si le
   processus s'arrête (RestartOnFailure). Créée pour l'utilisateur courant, sans élévation.
   schtasks n'accepte le XML qu'en UTF-16 : la substitution des %%...%% du modèle et
@@ -120,7 +76,7 @@ var
   ResultCode: Integer;
 begin
   Template := ExpandConstant('{app}\startup_task.xml');
-  XmlPath := ExpandConstant('{tmp}\ApexTimingOCR_task.xml');
+  XmlPath := ExpandConstant('{tmp}\NewKartPanneauLed_task.xml');
   Cmd := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "'
     + '$x = [IO.File]::ReadAllText(' + PsQuote(Template) + ', [Text.Encoding]::UTF8); '
     + '$x = $x.Replace(''%%USERID%%'', $env:USERDOMAIN + ''\'' + $env:USERNAME)'
@@ -148,12 +104,19 @@ begin
   Exec('schtasks.exe', '/Delete /TN "{#TaskName}" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+{ La tâche des versions <= 2.x relancerait un exe qui n'existe plus : toujours supprimée. }
+procedure DeleteLegacyStartupTask();
+var
+  ResultCode: Integer;
+begin
+  Exec('schtasks.exe', '/Delete /TN "{#LegacyTaskName}" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    if not TesseractInstalled() then
-      InstallTesseract();
+    DeleteLegacyStartupTask();
     if WizardIsTaskSelected('startup') then
       CreateStartupTask()
     else
@@ -167,7 +130,7 @@ var
 begin
   if CurUninstallStep = usPostUninstall then
   begin
-    DataDir := ExpandConstant('{localappdata}\ApexTimingOCR');
+    DataDir := ExpandConstant('{localappdata}\NewKartPanneauLed');
     if DirExists(DataDir) then
     begin
       if MsgBox('Supprimer aussi la configuration et les journaux enregistrés (' + DataDir + ') ?',

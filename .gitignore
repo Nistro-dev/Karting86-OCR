@@ -9,5 +9,6 @@ timer_log.txt
 dist/
 dist_installer/
 build/ApexTimingOCR/
+build/NewKartPanneauLed/
 build/vendor/
 logos/

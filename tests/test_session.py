@@ -1,4 +1,4 @@
-from apex_ocr.ocr.parsing import LenientReading, StrictReading
+from apex_ocr.readings import LenientReading, StrictReading
 from apex_ocr.session import SessionEvent, SessionState, StopReason, SessionTracker, current_display
 
 

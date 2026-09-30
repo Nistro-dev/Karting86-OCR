@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from apex_ocr.ocr.parsing import seconds_from_time
+from apex_ocr.readings import seconds_from_time
 from apex_ocr.session import DisplayValue, SessionState
 
 

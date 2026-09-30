@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Callable, Optional
 
-from apex_ocr.ocr.parsing import LenientReading, StrictReading
+from apex_ocr.readings import LenientReading, StrictReading
 
 EPOCH = datetime.datetime(1899, 12, 30)
 US = 1_000_000
@@ -164,27 +164,34 @@ def make_reading(row: SessionRow, now_us: int, laps_done: Optional[int], accum_p
     )
 
 
-class SourceArbiter:
-    """Qui nourrit le suivi de session : la source directe tant qu'elle répond, l'OCR sinon
-    (repli après ``fallback_after_s`` sans lecture réussie), et retour dès qu'elle revient."""
-
-    def __init__(self, fallback_after_s: float = 10.0):
-        self.fallback_after_s = fallback_after_s
-        self.use_live = False
-
-    def update(self, now: float, last_ok: float) -> Optional[str]:
-        """``"live"`` / ``"ocr"`` au moment d'un basculement, sinon None."""
-        fresh = last_ok > 0 and now - last_ok <= self.fallback_after_s
-        if fresh and not self.use_live:
-            self.use_live = True
-            return "live"
-        if not fresh and self.use_live:
-            self.use_live = False
-            return "ocr"
-        return None
-
-    def reset(self) -> None:
-        self.use_live = False
+def probe_database(data_dir: str, host: str, user: str, password: str, fbclient_path: str = "",
+                   clock: Callable[[], datetime.datetime] = datetime.datetime.now) -> str:
+    """Ouverture ponctuelle de la base du jour (lecture seule) : compte rendu lisible."""
+    path = db_path_for(data_dir, clock().date())
+    if not os.path.exists(path):
+        return f"base du jour absente ({path}) — GoKarts n'a pas encore été lancé aujourd'hui ?"
+    client = find_fbclient(fbclient_path)
+    if not client:
+        return "fbclient.dll 64 bits introuvable (serveur Firebird installé ? sinon renseigner apex_fbclient_path)"
+    try:
+        from firebird.driver import Isolation, TraAccessMode, connect, driver_config, tpb
+        driver_config.fb_client_library.value = client
+        con = connect(f"{host}:{path}", user=user, password=password)
+        try:
+            tra = con.transaction_manager(default_tpb=tpb(isolation=Isolation.READ_COMMITTED,
+                                                          access_mode=TraAccessMode.READ))
+            cur = tra.cursor()
+            cur.execute(SESSIONS_SQL)
+            rows = [SessionRow(*[int(v or 0) for v in r]) for r in cur.fetchall()]
+            tra.rollback()
+        finally:
+            con.close()
+    except Exception as exc:
+        return f"échec ({str(exc).strip().splitlines()[0][:160] or type(exc).__name__})"
+    live = pick_live_session(rows)
+    state = (f"session {live.idx} en cours ({format_remaining(remaining_us(live, to_us(clock())), live.duration_us >= 3600 * US)} restant)"
+             if live else "aucune session en cours")
+    return f"OK — {os.path.basename(path)}, {len(rows)} session(s) démarrée(s) aujourd'hui, {state}."
 
 
 # ---- thread de lecture -------------------------------------------------------------

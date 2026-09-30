@@ -39,7 +39,7 @@ class TrayIcon:
             pystray.MenuItem("Afficher", lambda: self._on_show(), default=True),
             pystray.MenuItem("Quitter", lambda: self._on_quit()),
         )
-        self._icon = pystray.Icon("ApexTimingOCR", self._icons[HealthStatus.IDLE], "Apex Timing OCR", menu)
+        self._icon = pystray.Icon("NewKartPanneauLed", self._icons[HealthStatus.IDLE], branding.APP_NAME, menu)
         threading.Thread(target=self._icon.run, daemon=True).start()
 
     def set_status(self, status: HealthStatus, detail: str = "") -> None:
@@ -50,7 +50,7 @@ class TrayIcon:
         self._status_text = f"État : {label}" + (f" — {detail}" if detail else "")
         self._icon.icon = self._icons[status]
         try:
-            self._icon.title = f"Apex Timing OCR — {label}" + (f"\n{detail}" if detail else "")[:_TOOLTIP_MAX]
+            self._icon.title = (f"{branding.APP_NAME} — {label}" + (f"\n{detail}" if detail else ""))[:_TOOLTIP_MAX]
             self._icon.update_menu()
         except Exception:
             pass

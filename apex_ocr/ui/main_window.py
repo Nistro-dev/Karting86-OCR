@@ -1,10 +1,9 @@
 """Fenêtre principale (prod) : logo, statut (avec le détail d'un problème), état du
-panneau LED, gros timer. Minimaliste par design — la configuration/calibration/
-journal vivent dans la fenêtre "dev" (``DevWindow``), ouverte via Ctrl+Maj+D."""
+panneau LED, gros timer. Minimaliste par design — les réglages et le journal vivent
+dans la fenêtre "dev" (``DevWindow``), ouverte via Ctrl+Maj+D."""
 from __future__ import annotations
 
 import tkinter as tk
-import webbrowser
 from dataclasses import dataclass
 from typing import Callable
 
@@ -37,7 +36,7 @@ class MainWindow(ctk.CTk):
             ctk.set_default_color_theme("green")
 
         self._cb = callbacks
-        self.title(f"Apex Timing OCR — v{__version__}")
+        self.title(f"{branding.APP_NAME} — v{__version__}")
         self.geometry("480x460")
         self.minsize(400, 380)
         self.protocol("WM_DELETE_WINDOW", self._cb.on_close)
@@ -65,15 +64,6 @@ class MainWindow(ctk.CTk):
     def _build_layout(self) -> None:
         self._build_header()
 
-        # Bannière (masquée par défaut) : Tesseract introuvable -> l'appli ne peut rien lire.
-        self.banner = ctk.CTkFrame(self, fg_color=branding.PRIMARY_RED, corner_radius=6)
-        self.banner_lbl = ctk.CTkLabel(self.banner, text="", text_color="#ffffff", wraplength=330,
-                                       justify="left", anchor="w")
-        self.banner_lbl.pack(side="left", fill="x", expand=True, padx=(10, 6), pady=8)
-        self.banner_btn = ctk.CTkButton(self.banner, text="Télécharger", width=100, fg_color="#ffffff",
-                                        text_color=branding.PRIMARY_RED, hover_color="#e6e6e6")
-        self.banner_btn.pack(side="right", padx=(0, 10), pady=8)
-
         status_row = ctk.CTkFrame(self, fg_color="transparent")
         status_row.pack(fill="x", padx=16, pady=(6, 0))
         self.status_dot = tk.Canvas(status_row, width=14, height=14, highlightthickness=0)
@@ -81,7 +71,7 @@ class MainWindow(ctk.CTk):
         self._status_dot_id = self.status_dot.create_oval(2, 2, 12, 12, fill=branding.STATUS_GREY, outline="")
         self.status_lbl = ctk.CTkLabel(status_row, text="En attente")
         self.status_lbl.pack(side="left", padx=6)
-        # Détail lisible du problème courant (« Fenêtre "…" introuvable », ...).
+        # Détail lisible du problème courant (« Base Apex Timing injoignable : … »).
         self.status_detail_lbl = ctk.CTkLabel(self, text="", text_color=branding.PRIMARY_RED,
                                               wraplength=440, justify="left", anchor="w")
         self.status_detail_lbl.pack(fill="x", padx=16)
@@ -138,21 +128,3 @@ class MainWindow(ctk.CTk):
             label = f"{label} — {detail}"
         self.led_dot.itemconfig(self._led_dot_id, fill=color)
         self.led_lbl.configure(text=label)
-
-    def show_banner(self, message: str, url: str = "") -> None:
-        """Bandeau rouge en haut de la fenêtre (Tesseract introuvable...), avec un bouton
-        qui ouvre ``url`` dans le navigateur."""
-        self.banner_lbl.configure(text=message)
-        if url:
-            self.banner_btn.configure(command=lambda: webbrowser.open(url))
-            self.banner_btn.pack(side="right", padx=(0, 10), pady=8)
-        else:
-            self.banner_btn.pack_forget()
-        self.banner.pack(fill="x", padx=16, pady=(10, 0), after=self._first_child())
-
-    def hide_banner(self) -> None:
-        self.banner.pack_forget()
-
-    def _first_child(self):
-        children = self.winfo_children()
-        return children[0] if children else None

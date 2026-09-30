@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
 
-from apex_ocr.ocr.parsing import LenientReading, StrictReading, seconds_from_time, time_from_seconds
+from apex_ocr.readings import LenientReading, StrictReading, seconds_from_time, time_from_seconds
 
 OCR_LOST_TIMEOUT_SECONDS = 10.0
 REQUIRED_CONFIRMATIONS = 2
