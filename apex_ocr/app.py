@@ -37,6 +37,7 @@ from apex_ocr.ocr.preprocess import preprocess
 from apex_ocr.paths import CONFIG_PATH, LOG_DIR, OUTPUT_PATH, test_page_path
 from apex_ocr.power import PowerMonitor
 from apex_ocr.session import DisplayValue, SessionEvent, SessionState, SessionTracker, StopReason, current_display
+from apex_ocr.source.apex_live import ApexLiveSource, LiveStatus, SourceArbiter
 from apex_ocr.ui import branding
 from apex_ocr.ui.dev_window import DevWindow, DevWindowCallbacks
 from apex_ocr.ui.main_window import MainWindow, MainWindowCallbacks
@@ -54,7 +55,9 @@ _REASON_LABELS = {
     StopReason.TIME_ZERO: "temps écoulé",
     StopReason.OCR_LOST: "signal perdu",
     StopReason.CANCELLED: "course annulée",
+    StopReason.SOURCE_ENDED: "fin signalée par Apex Timing",
 }
+LIVE_IDLE_SLEEP_S = 0.5   # boucle OCR au repos (source directe active) : pas de capture, pas de Tesseract
 
 TESSERACT_MISSING_MSG = ("Tesseract OCR introuvable — relancer l'installateur, ou l'installer depuis "
                          "le site UB-Mannheim (dossier par défaut C:\\Program Files\\Tesseract-OCR).")
@@ -89,6 +92,11 @@ class App:
         self._testing_ocr = False
         self._last_ocr_error = ""          # dernière erreur Tesseract/OCR (texte), "" si tout va bien
         self._health_detail = ""
+        # Source directe (base Apex Timing) : créée au start() si config.source == "apex_live" ;
+        # l'arbitre décide qui nourrit le suivi de session (elle, ou l'OCR en repli).
+        self.live_source: Optional[ApexLiveSource] = None
+        self._arbiter = SourceArbiter(self.config.apex_fallback_seconds)
+        self._last_source_status_text = ""
 
         self.led = LedPanel(
             self.config.led_width,
@@ -144,6 +152,7 @@ class App:
             on_led_chunk_minutes=self._led_set_chunk_minutes,
             on_led_password=self._led_set_password,
             on_log_level=self._set_log_level,
+            on_source_changed=self._set_source,
         )
         self.dev_window = DevWindow(self.window, self.config, dev_callbacks)
         self.dev_window.set_zone(self.config.zone)
@@ -376,7 +385,8 @@ class App:
     def start(self) -> None:
         if self.running:
             return
-        if not self.config.window_title or not self.config.zone:
+        use_live = self.config.source == "apex_live"
+        if not self.config.ocr_ready and not use_live:
             messagebox.showwarning("Attention", "Sélectionnez une fenêtre et définissez la zone.")
             return
         self._persist_config_from_ui()
@@ -386,15 +396,114 @@ class App:
             self._ocr_thread.join(timeout=max(0.05, self.config.ocr_interval_ms / 1000) + 1.0)
         self.running = True
         self.tracker.reset()
+        self._arbiter.reset()
+        self.tracker.round_up = False
         self.dev_window.set_running(True)
-        self.dev_window.log("OCR démarré.")
-        self._ocr_thread = threading.Thread(target=self._ocr_loop, daemon=True, name="ocr")
-        self._ocr_thread.start()
+        if use_live:
+            self._start_live_source()
+        if self.config.ocr_ready:
+            self.dev_window.log("OCR démarré." + (" (en repli derrière la base Apex Timing)" if use_live else ""))
+            self._ocr_thread = threading.Thread(target=self._ocr_loop, daemon=True, name="ocr")
+            self._ocr_thread.start()
+        else:
+            self.dev_window.log("OCR non calibré (fenêtre/zone) : aucun repli possible si la base Apex Timing tombe.")
 
     def stop(self) -> None:
         self.running = False
+        self._stop_live_source()
         self.dev_window.set_running(False)
         self.dev_window.log("OCR arrêté.")
+
+    # ---- source directe (base Apex Timing) --------------------------------
+
+    def _start_live_source(self) -> None:
+        self.live_source = ApexLiveSource(
+            self.logger, self.config.apex_data_dir, host=self.config.apex_db_host,
+            user=self.config.apex_db_user, password=self.config.apex_db_password,
+            fbclient_path=self.config.apex_fbclient_path, poll_s=self.config.apex_poll_ms / 1000,
+        )
+        self.live_source.start()
+        self.dev_window.log("Source Apex Timing : lecture de la base en cours...")
+
+    def _stop_live_source(self) -> None:
+        src, self.live_source = self.live_source, None
+        if src is not None:
+            src.stop()
+        self._arbiter.reset()
+        self.tracker.round_up = False
+        self._set_source_status("")
+
+    def _set_source(self, source: str) -> None:
+        """Bascule OCR <-> base Apex Timing depuis la fenêtre dev (mémorisée)."""
+        if source == self.config.source:
+            return
+        self.config.source = source
+        self.config.save()
+        self.logger.info("Source du chrono : %s", source)
+        if self.running:
+            self.stop()
+        if self.config.is_ready:
+            self.start()
+
+    def _set_source_status(self, text: str, color: Optional[str] = None) -> None:
+        if text != self._last_source_status_text:
+            self._last_source_status_text = text
+            self.dev_window.set_source_status(text, color)
+
+    def _poll_live_source(self, now: float) -> None:
+        """Appelé à chaque rafraîchissement UI : lit la dernière lecture de la base, décide
+        source directe / repli OCR, et nourrit le suivi de session comme le ferait l'OCR."""
+        src = self.live_source
+        if src is None:
+            return
+        reading, last_ok = src.latest()
+        switched = self._arbiter.update(now, last_ok)
+        if switched == "live":
+            self.tracker.round_up = True
+            self.logger.info("Source directe Apex Timing active : l'OCR est en pause (aucun appel Tesseract).")
+            self.dev_window.log("Base Apex Timing lue : l'OCR passe en repli.")
+        elif switched == "ocr":
+            self.tracker.round_up = False
+            self.tracker.set_paused(False, now)
+            self.logger.warning("Base Apex Timing muette depuis %.0f s (%s) : repli sur l'OCR.",
+                                self.config.apex_fallback_seconds, src.status_detail or src.status.name)
+            self.dev_window.log("Base Apex Timing injoignable : repli sur l'OCR." if self.config.ocr_ready
+                                else "Base Apex Timing injoignable et OCR non calibré : plus de lecture.")
+        self._refresh_source_status(src, reading)
+        if not self._arbiter.use_live:
+            if not self.config.ocr_ready:
+                self.health.record_capture_failure()   # personne ne lit plus rien : le dire (rouge)
+            return
+        self.health.record_capture_success()
+        if reading is None:
+            if self.tracker.state == SessionState.RUNNING:
+                self._handle_events(self.tracker.force_stop(now))
+            elif self.tracker.state == SessionState.ARMED:
+                self.tracker.reset()
+            return
+        if self.tracker.state == SessionState.RUNNING:
+            self.tracker.set_paused(reading.paused, now)
+            events = self.tracker.on_lenient_reading(reading.lenient(), now)
+        else:
+            events = self.tracker.on_strict_reading(reading.strict(), now)
+        self._handle_events(events)
+        if not reading.paused:
+            self.tracker.sync_exact(reading.remaining_s, now)   # sans effet hors RUNNING
+
+    def _refresh_source_status(self, src: ApexLiveSource, reading) -> None:
+        if src.status == LiveStatus.CONNECTED and self._arbiter.use_live:
+            if reading is None:
+                self._set_source_status("Base Apex Timing : connectée, aucune session en cours", branding.STATUS_GREEN)
+            else:
+                self._set_source_status(
+                    f"Base Apex Timing : session {reading.session_idx}" + (" en pause" if reading.paused else " en cours"),
+                    branding.STATUS_GREEN)
+        elif src.status in (LiveStatus.CONNECTING, LiveStatus.CONNECTED):
+            self._set_source_status("Base Apex Timing : connexion...", branding.STATUS_AMBER)
+        else:
+            detail = f" ({src.status_detail})" if src.status_detail else ""
+            fallback = "repli OCR" if self.config.ocr_ready else "OCR non calibré : aucune lecture"
+            self._set_source_status(f"Base Apex Timing indisponible{detail} — {fallback}", branding.STATUS_AMBER)
 
     # ---- boucle OCR (thread d'arrière-plan) ---------------------------
 
@@ -413,6 +522,11 @@ class App:
 
     def _ocr_loop(self) -> None:
         while self.running:
+            if self._arbiter.use_live:
+                # Source directe active : ni capture ni Tesseract (CPU au repos) ; la boucle
+                # reprend d'elle-même dès que l'arbitre repasse sur l'OCR.
+                time.sleep(LIVE_IDLE_SLEEP_S)
+                continue
             try:
                 img, reason = self._capture_zone_ex()
                 if img is None:
@@ -483,6 +597,8 @@ class App:
                 self.dev_window.set_preview_image(img, preprocess(img, self.config.threshold))
             if changed:
                 self.dev_window.set_last_ocr_text(raw)
+        if self._arbiter.use_live:
+            return   # une lecture OCR en transit pendant le basculement : la base fait foi
         if self.tracker.state == SessionState.RUNNING:
             reading = parse_lenient(text)
             if changed:
@@ -529,6 +645,7 @@ class App:
 
     def _refresh_once(self) -> None:
         now = time.monotonic()
+        self._poll_live_source(now)
         if self.tracker.state == SessionState.RUNNING:
             self._handle_events(self.tracker.tick(now))
 
@@ -770,10 +887,14 @@ class App:
 
     def _health_detail_text(self, status: HealthStatus) -> str:
         """Ce qui ne va pas, en clair (fenêtre principale, fenêtre dev, infobulle systray)."""
+        if self.live_source is not None and self._arbiter.use_live:
+            return ""   # la base Apex Timing fait foi : l'état de l'OCR n'a pas d'importance
         if not self._tesseract_ok():
             return "tesseract.exe introuvable : l'OCR ne peut pas fonctionner."
         if status != HealthStatus.ERROR:
             return ""
+        if self.live_source is not None and not self.config.ocr_ready:
+            return f"Base Apex Timing injoignable ({self.live_source.status_detail or 'sans détail'}) et OCR non calibré."
         if self._last_capture_reason == capture.REASON_WINDOW_NOT_FOUND:
             title = self.config.window_title or "(aucune)"
             return f"Fenêtre « {title} » introuvable : Apex Timing fermé ou titre différent ?"
@@ -866,6 +987,7 @@ class App:
 
     def _really_quit(self) -> None:
         self.running = False
+        self._stop_live_source()
         self._persist_config_from_ui()
         self.power.stop()
         self.led.shutdown()

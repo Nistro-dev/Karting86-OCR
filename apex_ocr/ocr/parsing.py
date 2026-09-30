@@ -67,8 +67,10 @@ def seconds_from_time(text: str) -> Optional[int]:
     return None
 
 
-def time_from_seconds(total_seconds: float, with_hours: bool) -> str:
-    total_seconds = max(0, int(round(total_seconds)))
+def time_from_seconds(total_seconds: float, with_hours: bool, round_up: bool = False) -> str:
+    """``round_up`` : arrondi au supérieur, comme l'affichage de GoKarts (source directe)."""
+    import math
+    total_seconds = max(0, int(math.ceil(total_seconds - 1e-6) if round_up else round(total_seconds)))
     if with_hours:
         h, rem = divmod(total_seconds, 3600)
         m, s = divmod(rem, 60)

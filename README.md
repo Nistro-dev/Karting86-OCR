@@ -18,6 +18,27 @@ Apex Timing ne propose ni API ni port local pour récupérer ces données. Cette
 - Écriture du timer courant dans `timer.txt` (lisible par une appli externe) et journal applicatif avec rotation quotidienne (rétention configurable)
 - `test_timer.html` : page web autonome simulant un chrono Apex Timing (avec ou sans tours, lancement manuel) pour tester l'OCR sans l'application réelle ; installée avec l'appli (bouton **Page de test** dans la fenêtre dev, raccourci dans le menu Démarrer). La boîte du chrono garde toujours la même taille (le texte est réduit si besoin), la zone OCR calibrée reste donc valable
 
+## Source Apex Timing en direct (sans OCR)
+
+Depuis la v2.8, l'appli peut lire le chrono **directement dans la base de données de GoKarts / GoServer** (Apex Timing) au lieu de l'écran : temps exact à la microseconde, tours du leader, pause, fin ou annulation vus instantanément, zéro appel Tesseract, CPU au repos. L'enquête complète (ce qui a été cherché, trouvé, écarté) est dans `docs/apex_findings.md`.
+
+**Ce qui est lu** : la base Firebird du jour `C:\ApexTiming\Data\DAYAAAAMMJJ.GO` (créée par GoKarts à son lancement), table `T1_SESSIONS_V8` (départ, pause, fin, durée, tours de la session) et `T1_S<n>_RC` (passages, pour le nombre de tours). Lecture **strictement en lecture seule** (transactions read-only), avec le compte Firebird par défaut ; rien n'est écrit ni modifié côté Apex Timing.
+
+**Réglages** (`config.json`, ou onglet **Capture & OCR** → bouton **Source**) :
+
+| Clé | Défaut | Rôle |
+|---|---|---|
+| `source` | `"ocr"` | `"apex_live"` pour lire la base ; l'OCR reste en **repli automatique** |
+| `apex_data_dir` | `C:\ApexTiming\Data` | dossier des bases journalières |
+| `apex_db_host` / `apex_db_user` / `apex_db_password` | `localhost` / `SYSDBA` / `masterkey` | connexion Firebird |
+| `apex_fbclient_path` | vide | `fbclient.dll` 64 bits ; vide = celui du serveur Firebird installé (`C:\Program Files\Firebird\Firebird_5_0`) |
+| `apex_poll_ms` | 500 | cadence de lecture |
+| `apex_fallback_seconds` | 10 | base muette depuis ce délai → repli OCR (si fenêtre + zone sont calibrées), retour automatique dès qu'elle répond |
+
+**Comportement** : tant que la base répond, l'OCR ne capture ni ne lit rien ; le suivi de session est nourri par la base (départ confirmé sur 2 lectures décroissantes comme avec l'OCR, puis horloge recalée exactement à chaque lecture, affichage arrondi au supérieur comme GoKarts). Une pause dans GoKarts gèle le chrono, un STOP ou une fin de session arrête le suivi aussitôt (`fin signalée par Apex Timing` dans le journal). Avec `source: "apex_live"`, l'appli démarre seule même si l'OCR n'est pas calibré (mais sans repli possible).
+
+**Dépannage** : le libellé à côté du bouton **Source** dit ce que fait la base (connectée / session en cours / indisponible + raison). Journal : `Base Apex Timing : CONNECTED`, `RETRYING (base du jour absente …)` (GoKarts pas encore lancé : réessai toutes les 2 à 15 s), `RETRYING (login refusé …)` (mot de passe Firebird changé : `apex_db_password`), `fbclient.dll 64 bits introuvable` (serveur Firebird déplacé : `apex_fbclient_path`).
+
 ## Installation (Windows)
 
 ### Option A - Installeur (recommandé)
@@ -98,6 +119,8 @@ apex_ocr/
   capture.py                capture de fenêtre Windows (PrintWindow + repli mss)
   session.py                machine à états de la session de course (pure logique, testée)
   health.py                  statut de santé du pipeline (pure logique, testé)
+  source/
+    apex_live.py             lecture directe de la base Firebird de GoKarts (thread, reconnexion, repli OCR arbitré ; logique pure testée)
   ocr/
     parsing.py               parsing du texte OCR brut -> lectures structurées (pure logique, testé)
     preprocess.py             prétraitement image (seuillage, upscale)

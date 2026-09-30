@@ -58,6 +58,7 @@ class StopReason(Enum):
     TIME_ZERO = auto()
     OCR_LOST = auto()
     CANCELLED = auto()
+    SOURCE_ENDED = auto()   # la source directe (base Apex Timing) dit que la session est finie/annulée
 
 
 class SessionEvent(Enum):
@@ -130,10 +131,49 @@ class SessionTracker:
         self._session_start_seconds: int = 0
         self._last_good_time_wall: Optional[float] = None
         self._last_stop_wall: Optional[float] = None
+        self._paused_since: Optional[float] = None
+        self.round_up = False   # source directe : afficher comme GoKarts (arrondi au supérieur)
 
     @property
     def has_laps(self) -> bool:
         return self._has_laps
+
+    def sync_exact(self, remaining_seconds: float, now: float) -> None:
+        """Recale l'horloge interne sur un restant exact (source directe, jamais l'OCR) :
+        ni tolérance ni confirmations, la valeur est certaine. Sans effet hors ``RUNNING``
+        ou en pause."""
+        if self.state != SessionState.RUNNING or self._paused_since is not None:
+            return
+        self._session_start_seconds = remaining_seconds
+        self._session_start_wall = now
+        self._last_good_time_wall = now
+
+    @property
+    def paused(self) -> bool:
+        return self._paused_since is not None
+
+    def set_paused(self, paused: bool, now: float) -> None:
+        """Pause connue avec certitude (source directe) : l'horloge interne est gelée, puis
+        décalée de la durée de la pause à la reprise. Sans effet hors ``RUNNING`` (une source
+        OCR ne sait pas distinguer une pause d'une annulation : elle n'appelle jamais ceci)."""
+        if self.state != SessionState.RUNNING:
+            self._paused_since = None
+            return
+        if paused and self._paused_since is None:
+            self._paused_since = now
+            self._log.info("Session en pause")
+        elif not paused and self._paused_since is not None:
+            self._session_start_wall += now - self._paused_since
+            self._log.info("Reprise après %.0f s de pause", now - self._paused_since)
+            self._paused_since = None
+
+    def force_stop(self, now: float) -> list[SessionEvent]:
+        """Arrêt certain signalé par la source directe (session terminée, annulée ou remise
+        à zéro dans Apex Timing) : pas de confirmations, la valeur affichée est figée."""
+        if self.state != SessionState.RUNNING:
+            self.reset()
+            return []
+        return [self._stop(StopReason.SOURCE_ENDED, now)]
 
     def reset(self) -> None:
         self.state = SessionState.WAITING
@@ -155,6 +195,7 @@ class SessionTracker:
         self._laps_done = None
         self._laps_total = None
         self._has_laps = False
+        self._paused_since = None
 
     def on_strict_reading(self, reading: Optional[StrictReading], now: float) -> list[SessionEvent]:
         """Lecture stricte : utilisée tant qu'on n'est pas encore ``RUNNING``."""
@@ -403,7 +444,7 @@ class SessionTracker:
         else:
             remaining = max(0.0, self._remaining_seconds(now))
         return LiveDisplay(
-            time_text=time_from_seconds(remaining, self._with_hours),
+            time_text=time_from_seconds(remaining, self._with_hours, self.round_up),
             laps_done=self._laps_done,
             laps_total=self._laps_total,
         )
@@ -423,13 +464,15 @@ class SessionTracker:
         )
 
     def _remaining_seconds(self, now: float) -> float:
+        if self._paused_since is not None:
+            now = self._paused_since          # horloge gelée pendant la pause
         return self._session_start_seconds - (now - self._session_start_wall)
 
     def _stop(self, reason: StopReason, now: float, override_seconds: Optional[float] = None) -> SessionEvent:
         remaining = override_seconds if override_seconds is not None else max(0.0, self._remaining_seconds(now))
         remaining = max(0.0, remaining)
         self.last_completed = CompletedResult(
-            time_text=time_from_seconds(remaining, self._with_hours),
+            time_text=time_from_seconds(remaining, self._with_hours, self.round_up),
             laps_done=self._laps_done,
             laps_total=self._laps_total,
             reason=reason,

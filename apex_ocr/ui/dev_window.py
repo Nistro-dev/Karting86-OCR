@@ -59,6 +59,11 @@ class DevWindowCallbacks:
     on_led_chunk_minutes: Callable[[int], None]
     on_led_password: Callable[[str], None]
     on_log_level: Callable[[str], None]
+    on_source_changed: Callable[[str], None]   # "ocr" | "apex_live"
+
+
+SOURCE_LABELS = {"ocr": "OCR (écran)", "apex_live": "Apex Timing (base)"}
+SOURCE_KEYS = {v: k for k, v in SOURCE_LABELS.items()}
 
 
 class DevWindow(ctk.CTkToplevel):
@@ -103,6 +108,17 @@ class DevWindow(ctk.CTkToplevel):
 
         cfg_frame = ctk.CTkFrame(tab)
         cfg_frame.pack(fill="x", padx=6, pady=(6, 6))
+
+        row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
+        row.pack(fill="x", **pad)
+        ctk.CTkLabel(row, text="Source :", width=label_w, anchor="w").pack(side="left")
+        self.source_var = tk.StringVar(value=SOURCE_LABELS.get(config.source, SOURCE_LABELS["ocr"]))
+        ctk.CTkSegmentedButton(
+            row, values=list(SOURCE_LABELS.values()), variable=self.source_var, width=300,
+            command=lambda v: self._cb.on_source_changed(SOURCE_KEYS.get(v, "ocr")),
+        ).pack(side="left")
+        self.source_status_lbl = ctk.CTkLabel(row, text="", anchor="w", text_color=branding.ACCENT_GREY)
+        self.source_status_lbl.pack(side="left", fill="x", expand=True, padx=(12, 0))
 
         self.tess_var = tk.StringVar(value=config.tesseract_path)
         row = ctk.CTkFrame(cfg_frame, fg_color="transparent")
@@ -574,6 +590,9 @@ class DevWindow(ctk.CTkToplevel):
     def set_diagnostics(self, error_count: int, since_last_error: str) -> None:
         self.error_count_lbl.configure(text=f"Erreurs détectées : {error_count}")
         self.last_error_lbl.configure(text=f"Depuis la dernière erreur : {since_last_error}")
+
+    def set_source_status(self, text: str, color: Optional[str] = None) -> None:
+        self.source_status_lbl.configure(text=text, text_color=color or branding.ACCENT_GREY)
 
     def set_last_ocr_text(self, text: str) -> None:
         self.last_ocr_lbl.configure(text=text if text else "(rien)")
