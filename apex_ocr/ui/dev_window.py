@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import tkinter as tk
 from dataclasses import dataclass
-from tkinter import colorchooser
 from typing import Callable, Optional
 
 import customtkinter as ctk
@@ -14,7 +13,7 @@ import customtkinter as ctk
 from apex_ocr.config import AppConfig
 from apex_ocr.health import HealthStatus
 from apex_ocr.led.panel import LedStatus
-from apex_ocr.led.rendering import COLOR_HEX, color_index
+from apex_ocr.led.rendering import COLOR_HEX, COLOR_NAMES, color_index
 from apex_ocr.ui import branding
 
 LED_BRIGHTNESS_DEBOUNCE_MS = 400
@@ -55,6 +54,51 @@ class DevWindowCallbacks:
     on_led_chunk_minutes: Callable[[int], None]
     on_led_password: Callable[[str], None]
     on_log_level: Callable[[str], None]
+
+
+# Le panneau RHX8 n'affiche que 8 couleurs (1 bit par canal R, V, B) : on propose ces couleurs-là,
+# pas une palette libre où « orange » serait ramené sans prévenir au jaune.
+PANEL_COLOR_INDICES = (1, 2, 3, 4, 5, 6, 7)   # tout sauf le noir
+
+
+class PanelColorPicker(ctk.CTkToplevel):
+    """Petite fenêtre modale : les 7 couleurs affichables du panneau ; ``result`` = (r, g, b) ou None."""
+
+    def __init__(self, parent, title: str, current_hex: str):
+        super().__init__(parent)
+        self.title(title)
+        self.resizable(False, False)
+        self.result: Optional[tuple] = None
+        ctk.CTkLabel(self, text="Le panneau n'affiche que ces couleurs :", anchor="w").pack(fill="x", padx=14, pady=(12, 6))
+        grid = ctk.CTkFrame(self, fg_color="transparent")
+        grid.pack(padx=14, pady=(0, 8))
+        for n, idx in enumerate(PANEL_COLOR_INDICES):
+            hex_color = COLOR_HEX[idx]
+            selected = hex_color == current_hex
+            text_color = "#000000" if idx in (3, 6, 7) else "#ffffff"
+            ctk.CTkButton(
+                grid, text=COLOR_NAMES[idx], width=96, height=40, fg_color=hex_color, hover_color=hex_color,
+                text_color=text_color, border_width=3 if selected else 1,
+                border_color="#ffffff" if selected else branding.STATUS_GREY,
+                command=lambda i=idx: self._choose(i),
+            ).grid(row=n // 4, column=n % 4, padx=4, pady=4)
+        ctk.CTkButton(self, text="Annuler", width=90, fg_color="transparent", border_width=1,
+                      command=self.destroy).pack(pady=(4, 12))
+        self.transient(parent)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+        self.bind("<Escape>", lambda e: self.destroy())
+        # Centrée sur la fenêtre dev.
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def _choose(self, idx: int) -> None:
+        h = COLOR_HEX[idx].lstrip("#")
+        self.result = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+        self.destroy()
 
 
 class DevWindow(ctk.CTkToplevel):
@@ -229,6 +273,11 @@ class DevWindow(ctk.CTkToplevel):
         self.led_brightness_slider.pack(side="left", padx=(6, 0))
         self.led_brightness_lbl = ctk.CTkLabel(row, text=f"{level}/16", width=44)
         self.led_brightness_lbl.pack(side="left", padx=6)
+        ctk.CTkLabel(
+            disp_frame, anchor="w", justify="left", wraplength=660, text_color=branding.ACCENT_GREY,
+            text="Le panneau n'affiche que 8 couleurs : rouge, vert, jaune, bleu, magenta, cyan, blanc (et noir). "
+                 "Pas d'orange ni de nuances.",
+        ).pack(fill="x", padx=(12 + label_w, 12), pady=(0, 4))
 
         row = ctk.CTkFrame(disp_frame, fg_color="transparent")
         row.pack(fill="x", **pad)
@@ -396,31 +445,33 @@ class DevWindow(ctk.CTkToplevel):
 
     # ---- panneau LED : actions ------------------------------------------------
 
+    def _pick_panel_color(self, title: str, current_hex: str) -> Optional[tuple]:
+        picker = PanelColorPicker(self, title, current_hex)
+        self.wait_window(picker)
+        return picker.result
+
     def _on_pick_led_color(self) -> None:
-        rgb, _ = colorchooser.askcolor(color=self._led_color_hex, parent=self, title="Couleur du texte LED")
+        rgb = self._pick_panel_color("Couleur du texte LED", self._led_color_hex)
         if rgb is None:
             return
-        rgb = tuple(int(c) for c in rgb)
-        self._led_color_hex = COLOR_HEX[color_index(rgb)]   # 8 couleurs : montrer la vraie
+        self._led_color_hex = COLOR_HEX[color_index(rgb)]
         self.led_color_btn.configure(fg_color=self._led_color_hex, hover_color=self._led_color_hex)
         self._check_alert_color_visible()
         self._cb.on_led_color(rgb)
 
     def _on_pick_led_warn_color(self) -> None:
-        rgb, _ = colorchooser.askcolor(color=self._led_warn_color_hex, parent=self, title="Couleur d'avertissement LED")
+        rgb = self._pick_panel_color("Couleur d'avertissement LED", self._led_warn_color_hex)
         if rgb is None:
             return
-        rgb = tuple(int(c) for c in rgb)
         self._led_warn_color_hex = COLOR_HEX[color_index(rgb)]
         self.led_warn_color_btn.configure(fg_color=self._led_warn_color_hex, hover_color=self._led_warn_color_hex)
         self._check_alert_color_visible()
         self._cb.on_led_warn_color(rgb)
 
     def _on_pick_led_alert_color(self) -> None:
-        rgb, _ = colorchooser.askcolor(color=self._led_alert_color_hex, parent=self, title="Couleur d'alerte LED")
+        rgb = self._pick_panel_color("Couleur d'alerte LED", self._led_alert_color_hex)
         if rgb is None:
             return
-        rgb = tuple(int(c) for c in rgb)
         self._led_alert_color_hex = COLOR_HEX[color_index(rgb)]
         self.led_alert_color_btn.configure(fg_color=self._led_alert_color_hex, hover_color=self._led_alert_color_hex)
         self._check_alert_color_visible()
