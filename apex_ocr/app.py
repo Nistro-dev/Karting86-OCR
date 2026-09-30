@@ -100,6 +100,7 @@ class App:
             brightness=self.config.led_brightness,
             show_laps=self.config.led_show_laps,
             resync_minutes=self.config.led_resync_minutes,
+            rotate_180=self.config.led_rotate_180,
         )
         self._last_led_status: Optional[tuple[LedStatus, str]] = None
         self._led_wanted = self.config.led_enabled   # « Déconnecter » ne vaut que pour la session
@@ -138,6 +139,7 @@ class App:
             on_led_laps_only=self._led_set_laps_only,
             on_led_show_laps=self._led_set_show_laps,
             on_led_idle_clock=self._led_set_idle_clock,
+            on_led_rotate_180=self._led_set_rotate_180,
             on_led_wifi_autoconnect=self._led_set_wifi_autoconnect,
             on_led_chunk_minutes=self._led_set_chunk_minutes,
             on_led_password=self._led_set_password,
@@ -192,12 +194,25 @@ class App:
         """Liste des fenêtres ouvertes : l'énumération prend jusqu'à quelques centaines
         de ms -> en tâche de fond, résultat déposé dans la fenêtre dev."""
         def work():
-            titles = capture.list_window_titles()
             try:
-                self.window.after(0, self._guarded, self.dev_window.set_window_titles, titles)
+                titles = capture.list_window_titles()
+            except Exception as exc:              # jamais sans réponse : le bouton ↻ doit se réactiver
+                self._log_error_once("window_titles", exc)
+                titles = []
+            try:
+                # ``self.dev_window`` est résolu sur le thread Tk, au moment de la livraison :
+                # le premier appel part pendant la construction de DevWindow, avant que
+                # l'attribut existe (sinon le thread mourait en silence, liste vide, ↻ grisé).
+                self.window.after(0, self._guarded, self._deliver_window_titles, titles)
             except (RuntimeError, TclError):
                 pass
         threading.Thread(target=work, daemon=True, name="window-titles").start()
+
+    def _deliver_window_titles(self, titles: list[str]) -> None:
+        self.dev_window.set_window_titles(titles)
+        if not titles:
+            self.logger.warning("Aucune fenêtre listée (pygetwindow indisponible ?) : la liste « Fenêtre » reste vide.")
+            self.dev_window.log("Aucune fenêtre trouvée : cliquer ↻ pour réessayer.")
 
     def _open_logs_folder(self) -> None:
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -722,6 +737,13 @@ class App:
         self.config.led_idle_clock = enabled
         self.config.save()
         self.dev_window.log("Panneau LED hors course : " + ("heure affichée" if enabled else "écran noir"))
+
+    def _led_set_rotate_180(self, enabled: bool) -> None:
+        self.config.led_rotate_180 = enabled
+        self.config.save()
+        self.led.set_rotate_180(enabled)
+        self.dev_window.log("Panneau LED : " + ("image tournée de 180° (panneau à l'envers)" if enabled
+                                                else "image à l'endroit"))
 
     def _led_set_wifi_autoconnect(self, enabled: bool) -> None:
         self.config.led_wifi_autoconnect = enabled

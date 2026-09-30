@@ -70,6 +70,17 @@ class Frame:
     def is_blank(self) -> bool:
         return not any(any(row) for row in self.px)
 
+    def rotated_180(self) -> "Frame":
+        """Image tournée de 180° (panneau monté tête en bas). La rotation se fait sur la
+        zone dessinable (lignes 1 à H-1) : la ligne 0 reste vide car elle est en partie
+        inatteignable sur le panneau, et un décompte la retrouverait en bas sinon."""
+        out = Frame()
+        for y in range(1, H):
+            src, dst = self.px[y], out.px[H - y]
+            for x in range(W):
+                dst[W - 1 - x] = src[x]
+        return out
+
     def __eq__(self, other) -> bool:
         return isinstance(other, Frame) and self.px == other.px
 
@@ -223,15 +234,21 @@ def _fit_seg7(text: str, width: int, gap: int, min_w: int) -> Optional[tuple[int
 class TimerRenderer:
     """Compose une trame « temps » (+ tours à gauche), le plus grand possible."""
 
-    def __init__(self, width: int = W, height: int = H, rgb: tuple = (255, 255, 255)):
+    def __init__(self, width: int = W, height: int = H, rgb: tuple = (255, 255, 255),
+                 rotate_180: bool = False):
         self.width, self.height = width, height
         self.rgb = rgb
+        self.rotate_180 = rotate_180   # panneau monté tête en bas
 
     @property
     def color(self) -> int:
         return color_index(self.rgb)
 
     def render(self, time_text: str, laps_text: Optional[str] = None, color: Optional[int] = None) -> Frame:
+        fr = self._compose(time_text, laps_text, color)
+        return fr.rotated_180() if self.rotate_180 else fr
+
+    def _compose(self, time_text: str, laps_text: Optional[str], color: Optional[int]) -> Frame:
         fr = Frame()
         color = self.color if color is None else color
         x0, avail, gap = 0, self.width, 2

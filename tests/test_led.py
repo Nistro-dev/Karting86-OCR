@@ -163,6 +163,28 @@ def test_countdown_frames_one_per_second():
     assert len(TimerRenderer(64, 16, RED_RGB).countdown("00:10", max_frames=4)) == 4
 
 
+def test_rotated_180_mirrors_drawable_area_and_keeps_row0_clear():
+    fr = TimerRenderer(64, 16, RED_RGB).render("09:58", "03/20")
+    rot = fr.rotated_180()
+    assert not any(rot.px[0])                                  # ligne 0 toujours inatteignable
+    for y in range(1, 16):
+        for x in range(64):
+            assert rot.px[16 - y][63 - x] == fr.px[y][x]
+    assert rot != fr
+    assert rot.rotated_180() == fr                             # involution
+    assert Frame().rotated_180() == Frame()                    # écran noir inchangé
+
+
+def test_renderer_rotate_180_applies_to_every_frame():
+    plain, upside = TimerRenderer(64, 16, RED_RGB), TimerRenderer(64, 16, RED_RGB, rotate_180=True)
+    assert upside.render("09:58", "03/20") == plain.render("09:58", "03/20").rotated_180()
+    assert upside.render("12:34") == plain.render("12:34").rotated_180()
+    assert upside.countdown("00:02") == [f.rotated_180() for f in plain.countdown("00:02")]
+    # tours à gauche à l'endroit -> à droite une fois tourné (le panneau, lui, est à l'envers)
+    fr = upside.render("09:58", "03/20")
+    assert lit(fr, 0, 30) > 0 and lit(fr, 34, 64) > 0
+
+
 # ---- programme RHX8 -------------------------------------------------------
 
 
@@ -619,6 +641,31 @@ def test_set_show_laps_resends_current_content(led, fake):
     led.set_show_laps(True)
     wait_until(lambda: len(fake.uploads) == 4)
     assert fake.last_frames == frames_for("00:05", "03/20")
+
+
+def test_set_rotate_180_resends_current_content_upside_down(led, fake):
+    led.connect("192.168.47.1")
+    wait_until(lambda: led.status == LedStatus.CONNECTED and fake.uploads)
+    led.show(PanelContent("00:05", "03/20"))
+    wait_until(lambda: len(fake.uploads) == 2)
+    led.set_rotate_180(True)                                   # panneau retourné : renvoi immédiat
+    wait_until(lambda: len(fake.uploads) == 3)
+    assert fake.last_frames == [f.rotated_180() for f in frames_for("00:05", "03/20")]
+    led.set_rotate_180(False)
+    wait_until(lambda: len(fake.uploads) == 4)
+    assert fake.last_frames == frames_for("00:05", "03/20")
+
+
+def test_panel_created_upside_down_renders_rotated(fake):
+    p = LedPanel(64, 16, RED_RGB, BLUE_RGB, logging.getLogger("test_led"), password=PASSWORD, rotate_180=True)
+    try:
+        p.connect("192.168.47.1")
+        wait_until(lambda: p.status == LedStatus.CONNECTED and fake.uploads)
+        p.show(PanelContent("00:03"))
+        wait_until(lambda: len(fake.uploads) == 2)
+        assert fake.last_frames == [f.rotated_180() for f in frames_for("00:03")]
+    finally:
+        p.shutdown()
 
 
 def test_set_password_reconnects_with_new_password(led, fake):

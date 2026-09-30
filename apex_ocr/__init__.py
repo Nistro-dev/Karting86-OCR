@@ -1,3 +1,3 @@
 """Apex Timing OCR - extraction du timer/compteur de tours d'Apex Timing par OCR."""
 
-__version__ = "2.6.1"
+__version__ = "2.7.0"

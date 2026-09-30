@@ -85,8 +85,9 @@ class _Sequence:
 class LedPanel:
     def __init__(self, width: int, height: int, rgb: tuple, alert_rgb: tuple, logger: logging.Logger, *,
                  password: str = protocol.DEFAULT_PASSWORD, brightness: int = 12,
-                 show_laps: bool = True, resync_minutes: int = DEFAULT_CHUNK_MIN):
-        self._renderer = TimerRenderer(width, height, rgb)
+                 show_laps: bool = True, resync_minutes: int = DEFAULT_CHUNK_MIN,
+                 rotate_180: bool = False):
+        self._renderer = TimerRenderer(width, height, rgb, rotate_180=rotate_180)
         self._alert_rgb = tuple(alert_rgb)
         self._logger = logger
         self._password = password
@@ -164,6 +165,14 @@ class LedPanel:
         """Tours à côté du temps ou non ; le contenu courant est renvoyé."""
         with self._lock:
             self._show_laps = bool(show_laps)
+            self._sent = _UNSENT
+            self._wake = True
+            self._lock.notify()
+
+    def set_rotate_180(self, rotate: bool) -> None:
+        """Panneau monté tête en bas (image tournée de 180°) ou non ; le contenu courant est renvoyé."""
+        with self._lock:
+            self._renderer.rotate_180 = bool(rotate)
             self._sent = _UNSENT
             self._wake = True
             self._lock.notify()
