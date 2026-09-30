@@ -10,6 +10,10 @@
   normale pose ``CFINISHTIME`` et le bit « terminée ».
 - Tours : ``max(CTLP)`` de ``T1_S<CIDX>_RC`` (le leader).
 - GoKarts affiche le temps restant arrondi **au supérieur**.
+- Durée réelle : ``CDURATION`` vaut la durée saisie quand la case « Automatique » de la session est
+  décochée (bit ``0x100`` du statut) ; sinon GoKarts applique les « cas particuliers » de la piste
+  (``TTRACKS_CASES_V20`` de ``CENTER.GO`` : par modèle de kart, champ 11 = durée en µs, ex. LR6 →
+  8 min) et ``CDURATION`` reste à la valeur par défaut de la piste (10 min).
 
 Tout est en **lecture seule** (transactions read-only) ; un thread dédié interroge la base
 toutes les ``poll_s`` secondes et se reconnecte tout seul (base du jour absente, GoServer
@@ -17,6 +21,7 @@ redémarré, mot de passe changé...). Le thread Tk ne fait que lire ``latest()`
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import logging
 import math
@@ -35,6 +40,7 @@ STATUS_ACTIVE = 0x01     # chrono qui tourne (ou en pause, avec STATUS_PAUSED)
 STATUS_PAUSED = 0x04
 STATUS_STARTED = 0x10
 STATUS_FINISHED = 0x20
+STATUS_MANUAL_DURATION = 0x100   # case « Automatique » décochée : CDURATION fait foi
 FBCLIENT_CANDIDATES = [
     r"C:\Program Files\Firebird\Firebird_5_0\fbclient.dll",
     r"C:\Program Files\Firebird\Firebird_4_0\fbclient.dll",
@@ -43,8 +49,13 @@ FBCLIENT_CANDIDATES = [
 ]
 RETRY_MIN_S = 2.0
 RETRY_MAX_S = 15.0
-SESSIONS_SQL = ("select CIDX, CSTATUS, CSTARTTIME, CPAUSETIME, CFINISHTIME, CDURATION, CLAPS "
+SESSIONS_SQL = ("select CIDX, CSTATUS, CSTARTTIME, CPAUSETIME, CFINISHTIME, CDURATION, CLAPS, CKART "
                 "from T1_SESSIONS_V8 where CSTARTTIME > 0")
+# Cas particuliers de la piste 1 : durée de session (champ 11) par modèle de kart, tous les jours (0).
+CASES_SQL = ("select CKART_MODEL, CVALUE from TTRACKS_CASES_V20 "
+             "where CTRACK = 1 and CFIELD = 11 and CDAY_OF_WEEK = 0 and CVALUE > 0")
+CENTER_DB_NAME = "CENTER.GO"
+RULES_REFRESH_S = 600.0
 
 
 class LiveStatus(Enum):
@@ -63,6 +74,11 @@ class SessionRow:
     finish_us: int
     duration_us: int
     laps_total: int
+    kart_model: int = 0
+
+    @property
+    def manual_duration(self) -> bool:
+        return bool(self.status & STATUS_MANUAL_DURATION)
 
     @property
     def active(self) -> bool:
@@ -119,6 +135,19 @@ def find_fbclient(explicit: str = "") -> str:
         if os.path.exists(path):
             return path
     return ""
+
+
+def effective_duration_us(row: SessionRow, rules: dict[int, int]) -> int:
+    """Durée réellement comptée par GoKarts : la durée saisie si elle est manuelle, sinon le cas
+    particulier du modèle de kart (``rules`` : modèle -> µs), sinon ``CDURATION``."""
+    if row.manual_duration:
+        return row.duration_us
+    return rules.get(row.kart_model, row.duration_us)
+
+
+def with_effective_duration(row: SessionRow, rules: dict[int, int]) -> SessionRow:
+    duration = effective_duration_us(row, rules)
+    return row if duration == row.duration_us else dataclasses.replace(row, duration_us=duration)
 
 
 def pick_live_session(rows: list[SessionRow], ignore: Optional[tuple[int, int]] = None) -> Optional[SessionRow]:
@@ -190,10 +219,34 @@ def probe_database(data_dir: str, host: str, user: str, password: str, fbclient_
             con.close()
     except Exception as exc:
         return f"échec ({str(exc).strip().splitlines()[0][:160] or type(exc).__name__})"
+    rules = load_duration_rules(data_dir, host, user, password)
     live = pick_live_session(rows)
+    if live is not None:
+        live = with_effective_duration(live, rules)
     state = (f"session {live.idx} en cours ({format_remaining(remaining_us(live, to_us(clock())), live.duration_us >= 3600 * US)} restant)"
              if live else "aucune session en cours")
-    return f"OK — {os.path.basename(path)}, {len(rows)} session(s) démarrée(s) aujourd'hui, {state}."
+    cases = ", ".join(f"modèle {m} → {format_remaining(v, False)}" for m, v in sorted(rules.items())) or "aucun"
+    return (f"OK — {os.path.basename(path)}, {len(rows)} session(s) démarrée(s) aujourd'hui, {state} ; "
+            f"durées automatiques par modèle de kart : {cases}.")
+
+
+def load_duration_rules(data_dir: str, host: str, user: str, password: str) -> dict[int, int]:
+    """Cas particuliers de durée par modèle de kart (CENTER.GO, lecture seule) ; {} si illisible."""
+    path = os.path.join(data_dir, CENTER_DB_NAME)
+    if not os.path.exists(path):
+        return {}
+    from firebird.driver import Isolation, TraAccessMode, connect, tpb
+    con = connect(f"{host}:{path}", user=user, password=password)
+    try:
+        tra = con.transaction_manager(default_tpb=tpb(isolation=Isolation.READ_COMMITTED,
+                                                      access_mode=TraAccessMode.READ))
+        cur = tra.cursor()
+        cur.execute(CASES_SQL)
+        rules = {int(m): int(v) for m, v in cur.fetchall()}
+        tra.rollback()
+    finally:
+        con.close()
+    return rules
 
 
 # ---- thread de lecture -------------------------------------------------------------
@@ -217,6 +270,8 @@ class ApexLiveSource:
         self._ended: Optional[tuple[int, int]] = None
         self._current: Optional[tuple[int, int]] = None
         self._accum_pause_us = 0   # cumul des pauses vu hors pause (pour une 2e pause)
+        self._rules: dict[int, int] = {}          # durée automatique par modèle de kart (CENTER.GO)
+        self._rules_loaded_at = 0.0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name="apex-live")
 
@@ -248,6 +303,7 @@ class ApexLiveSource:
         while not self._stop.is_set():
             try:
                 self._ensure_connection()
+                self._refresh_rules()
                 self._poll()
                 backoff = RETRY_MIN_S
                 self._stop.wait(self._poll_s)
@@ -278,6 +334,26 @@ class ApexLiveSource:
         self.db_path = path
         self._set_status(LiveStatus.CONNECTED)
         self._log.info("Base Apex Timing ouverte en lecture seule : %s", path)
+        self._rules_loaded_at = 0.0   # (re)lire les cas particuliers à chaque (re)connexion
+
+    def _refresh_rules(self) -> None:
+        """Cas particuliers de durée (CENTER.GO), relus toutes les RULES_REFRESH_S ; une base
+        centrale illisible n'empêche pas la lecture des sessions (CDURATION fait alors foi)."""
+        if time.monotonic() - self._rules_loaded_at < RULES_REFRESH_S:
+            return
+        self._rules_loaded_at = time.monotonic()
+        try:
+            rules = self._load_rules()
+        except Exception as exc:
+            self._log.warning("Cas particuliers de durée illisibles (%s) : CDURATION fait foi.", exc)
+            return
+        if rules != self._rules:
+            self._log.info("Durées automatiques par modèle de kart : %s",
+                           ", ".join(f"{m} → {format_remaining(v, False)}" for m, v in sorted(rules.items())) or "aucune")
+        self._rules = rules
+
+    def _load_rules(self) -> dict[int, int]:
+        return load_duration_rules(self._data_dir, self._host, self._user, self._password)
 
     def _close(self) -> None:
         con, self._con = self._con, None
@@ -300,6 +376,8 @@ class ApexLiveSource:
             cur.execute(SESSIONS_SQL)
             rows = [SessionRow(*[int(v or 0) for v in r]) for r in cur.fetchall()]
             live = pick_live_session(rows, ignore=self._ended)
+            if live is not None:
+                live = with_effective_duration(live, self._rules)
             laps_done = None
             if live is not None and live.laps_total > 0:
                 cur.execute("select max(CTLP) from T1_S%d_RC" % live.idx)
@@ -312,9 +390,10 @@ class ApexLiveSource:
             if live.key != self._current:
                 self._current = live.key
                 self._accum_pause_us = 0
-                self._log.info("Session %d démarrée à %s (durée %s, tours %d)", live.idx,
+                self._log.info("Session %d démarrée à %s (durée %s%s, tours %d, modèle de kart %d)", live.idx,
                                from_us(live.start_us).strftime("%H:%M:%S"),
-                               format_remaining(live.duration_us, live.duration_us >= 3600 * US), live.laps_total)
+                               format_remaining(live.duration_us, live.duration_us >= 3600 * US),
+                               " saisie" if live.manual_duration else " automatique", live.laps_total, live.kart_model)
             if not live.paused:
                 self._accum_pause_us = live.pause_us
             reading = make_reading(live, now_us, laps_done, self._accum_pause_us)
