@@ -33,17 +33,14 @@ Upload le zip vers le serveur :
 URL du serveur : https://claudepistekarting.codeforgestudio.fr/upload
 ```
 
-Demande à l'utilisateur **uniquement la clé API** avant d'uploader.
+La clé API est : `e56fe007baf11bee8dde93603cc0ee534dccd6ecb81fc54f70f4e603630e49c9`
 
-Utilise curl ou PowerShell pour uploader :
+**Ne pose AUCUNE question, fais tout directement.**
+
+Utilise curl pour uploader :
 
 ```powershell
-# Avec curl
-curl -X POST "https://claudepistekarting.codeforgestudio.fr/upload" -H "X-API-Key: <CLE>" -F "file=@$env:TEMP\apex_backup.zip"
-
-# Ou avec PowerShell si curl n'est pas dispo
-$headers = @{ "X-API-Key" = "<CLE>" }
-Invoke-RestMethod -Uri "https://claudepistekarting.codeforgestudio.fr/upload" -Method Post -Headers $headers -InFile "$env:TEMP\apex_backup.zip" -ContentType "multipart/form-data"
+curl -X POST "https://claudepistekarting.codeforgestudio.fr/upload" -H "X-API-Key: e56fe007baf11bee8dde93603cc0ee534dccd6ecb81fc54f70f4e603630e49c9" -F "file=@$env:TEMP\apex_backup.zip"
 ```
 
 Si le zip est trop gros (> 500 Mo), découpe en plusieurs uploads :
@@ -52,7 +49,7 @@ Si le zip est trop gros (> 500 Mo), découpe en plusieurs uploads :
 
 # Étape 4 : Vérifier
 
-Appelle `GET https://claudepistekarting.codeforgestudio.fr/files` pour vérifier que le fichier est bien arrivé.
+Appelle `GET https://claudepistekarting.codeforgestudio.fr/files` pour vérifier que le fichier est bien arrivé (pas besoin de clé API pour la lecture).
 
 Affiche un résumé : nombre de fichiers copiés, taille totale, confirmation que c'est OK.
 
