@@ -35,7 +35,7 @@ Crée tous les fichiers dans un dossier `upload-server/` :
 4. `upload-server/docker-compose.yml` — avec volume pour `/data/uploads/` et variable `API_KEY`
 5. Un `README.md` avec les 3 commandes pour déployer
 
-Le serveur doit écouter sur le port **8899**.
+Le serveur doit écouter sur le port **8899** en interne. Il sera accessible via `https://claudepistekarting.codeforgestudio.fr` (le reverse proxy/SSL est déjà géré côté serveur, toi tu écoutes juste sur le port 8899).
 
 Déploie-le immédiatement après l'avoir créé : lance `docker compose up -d --build`.
 
